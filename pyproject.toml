@@ -1,0 +1,22 @@
+[project]
+name = "meetingrec"
+version = "0.1.0"
+description = "Local meeting recorder + transcriber + Claude summarizer (German-first)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "faster-whisper>=1.2.0",
+    "click>=8.1.0",
+    "huggingface-hub>=0.27.0",
+    "torch>=2.5.0",
+    "transformers>=4.40.0",
+]
+
+[tool.uv]
+# Pin torch to the CUDA 12.1 wheel index (works with the 580 driver / GTX 1060)
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }

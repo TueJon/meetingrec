@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Wrapper that runs the meetingrec CLI from its uv-managed venv.
+# Symlink target: ~/.local/bin/meetingrec
+exec uv run --project /home/tj/tools/meetingrec python /home/tj/tools/meetingrec/meetingrec.py "$@"
