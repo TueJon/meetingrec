@@ -5,10 +5,37 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Virtual environments
 .venv
+venv/
 
-# Local Whisper model weights (~1.6 GB)
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Local Whisper model weights and Hugging Face caches
 models/
+.cache/
 
+# Generated meeting artifacts
+Recordings/
+recordings/
+meetings/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.srt
+transcript.txt
+summary.md
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/

@@ -1,91 +1,155 @@
 # meetingrec
 
-Local meeting recorder + transcriber + Claude summarizer. German-first, runs on the GTX 1060.
+Local meeting recorder, Whisper transcription, and Claude-powered meeting-summary CLI
+for Linux desktops.
 
-## Where things live
+`meetingrec` records microphone audio plus system audio, writes a local WAV file,
+transcribes it with `faster-whisper`, and asks the Claude CLI to produce structured
+meeting minutes. It is German-first by default and falls back to a multilingual
+Whisper model when the detected language is not German.
 
-| What | Path |
-|---|---|
-| Project | `~/tools/meetingrec/` |
-| CLI binary (symlink) | `~/.local/bin/meetingrec` |
-| Wrapper script | `~/tools/meetingrec/meetingrec` |
-| Main code | `~/tools/meetingrec/meetingrec.py` |
-| German Whisper model (CT2 fp16) | `~/tools/meetingrec/models/whisper-de-turbo-ct2/` |
-| HF cache (extra models) | `~/.cache/huggingface/` |
-| Recordings + transcripts + summaries | `~/Recordings/meetings/<timestamp>_<slug>/` |
+## Features
+
+- Records microphone and system audio together via `ffmpeg` and PulseAudio/PipeWire.
+- Produces `audio.wav`, `transcript.srt`, `transcript.txt`, and `summary.md`.
+- Uses a local CTranslate2 German Whisper model when available.
+- Falls back to a multilingual faster-whisper model for non-German meetings.
+- Summarizes through the installed Claude CLI; no API key is stored in this repo.
+
+## Requirements
+
+- Linux desktop with PipeWire or PulseAudio-compatible sources.
+- Python 3.12.
+- `uv` for dependency management.
+- `ffmpeg` and `pactl`.
+- NVIDIA GPU with CUDA support for the default `device="cuda"` configuration.
+- Claude CLI installed and authenticated, or an `ANTHROPIC_API_KEY` available to the
+  Claude CLI if you use API-key auth.
+
+Install system tools on Debian/Ubuntu-style systems:
+
+```bash
+sudo apt install ffmpeg pulseaudio-utils
+```
+
+Install `uv` from the official Astral instructions if it is not already available.
+
+## Install
+
+```bash
+git clone https://github.com/tue-Jonas/meetingrec.git
+cd meetingrec
+uv sync
+```
+
+Run the CLI directly:
+
+```bash
+uv run meetingrec --help
+```
+
+Optional shell shortcut:
+
+```bash
+ln -s "$PWD/meetingrec" ~/.local/bin/meetingrec
+meetingrec --help
+```
+
+## Configuration
+
+The tool does not read a `.env` file automatically. Use your shell environment for
+optional values consumed by the external tools:
+
+```bash
+cp .env.example .env
+# Edit .env if needed, then:
+set -a
+. ./.env
+set +a
+```
+
+Useful environment variables:
+
+- `ANTHROPIC_API_KEY`: optional, only needed if your Claude CLI uses API-key auth
+  instead of its normal logged-in OAuth session.
+- `HF_TOKEN`: optional, only needed for private or gated Hugging Face models.
+
+Generated recordings, transcripts, summaries, local env files, virtualenvs, and model
+weights are ignored by git.
 
 ## Usage
 
-```bash
-# Record + transcribe + summarize, Ctrl+C to stop recording
-meetingrec full kickoff-tobias
-
-# Just record (e.g. on the road), transcribe later
-meetingrec record drive-back
-meetingrec transcribe ~/Recordings/meetings/2026-04-25_*/audio.wav
-meetingrec summarize ~/Recordings/meetings/2026-04-25_*/transcript.txt
-
-# Force English (skip German fine-tune)
-meetingrec full standup --multilingual
-meetingrec transcribe audio.wav --language en --multilingual
-
-# Custom output dir
-meetingrec full demo --out-root /tmp/demo
-
-# See all commands
-meetingrec --help
-meetingrec full --help
-```
-
-Each meeting dir contains:
-
-```
-audio.wav         16kHz mono mix of mic + system audio
-transcript.srt    timestamped subtitles
-transcript.txt    plain text
-summary.md        Claude-generated, structured (Zusammenfassung / Entscheidungen / To-dos / Offene Fragen)
-```
-
-## How it works
-
-1. **Capture** — `ffmpeg` with two PulseAudio inputs (default mic + default sink monitor), mixed via `amix`, 16kHz mono.
-2. **Transcribe** — `faster-whisper` loads `primeline/whisper-large-v3-turbo-german` (converted to CTranslate2 fp16) on CUDA, int8 compute (Pascal limitation). Runs language detection on the first 30s of audio; if it's not German, reloads the multilingual `mobiuslabsgmbh/faster-whisper-large-v3-turbo` and re-transcribes.
-3. **Summarize** — pipes the transcript to `claude --print --effort low` with a German Meeting-Scribe prompt (or English equivalent). Uses your Claude Code OAuth, not an API key.
-
-## Audio sources
-
-Capture uses your **system default mic** and **default sink monitor** by default. Override:
+Record, transcribe, and summarize in one command. Press `Ctrl+C` to stop recording:
 
 ```bash
-# List sources
+uv run meetingrec full kickoff
+```
+
+Record now and process later:
+
+```bash
+uv run meetingrec record customer-call
+uv run meetingrec transcribe ~/Recordings/meetings/2026-04-25_*/audio.wav
+uv run meetingrec summarize ~/Recordings/meetings/2026-04-25_*/transcript.txt
+```
+
+Force English output or skip the German model:
+
+```bash
+uv run meetingrec full standup --multilingual
+uv run meetingrec transcribe audio.wav --language en --multilingual
+uv run meetingrec summarize transcript.txt --language en
+```
+
+Choose a different output root:
+
+```bash
+uv run meetingrec full demo --out-root /tmp/meetingrec-demo
+```
+
+Each meeting directory contains:
+
+```text
+audio.wav       16 kHz mono mix of mic + system audio
+transcript.srt  timestamped subtitles
+transcript.txt  plain transcript
+summary.md      structured Claude-generated minutes
+```
+
+## Audio Sources
+
+By default, capture uses the system default microphone and the monitor source for the
+current default sink. List sources with:
+
+```bash
 pactl list short sources
-
-# Use a specific mic + system audio combo
-meetingrec record meeting --mic alsa_input.usb-Auna_Mic_CM900_...mono-fallback \
-                          --system bluez_output.04_00_6E_CC_19_A5.1.monitor
 ```
 
-If you switch your default audio device mid-meeting, audio capture won't follow — it locks the source on start.
-
-## Known gotchas
-
-- **Pascal GPU (GTX 1060)** can't do fp16 ALU efficiently — `compute_type` is hard-coded to `int8`. On an RTX 2060+ you'd switch to `float16` for 3-5× speed.
-- **No diarization** ("who said what"). Adding pyannote 3.1 needs a HuggingFace token + accepting model terms on the website. Not wired up.
-- **Claude billing** runs through Claude Code OAuth, not the API. Each summary call costs whatever a small Sonnet print call costs on your plan.
-- **`--bare` doesn't work** for the summary subprocess — Claude Code in `--bare` mode requires `ANTHROPIC_API_KEY`, which isn't set. We use plain `--print` so OAuth applies.
-
-## Reinstall / reset
+Use explicit sources when needed:
 
 ```bash
-cd ~/tools/meetingrec
-uv sync                                  # rebuild venv from pyproject.toml
-ls models/whisper-de-turbo-ct2/          # German model lives here, ignored from git
+uv run meetingrec record meeting \
+  --mic alsa_input.usb-Example_Microphone.mono-fallback \
+  --system bluez_output.00_11_22_33_44_55.1.monitor
 ```
 
-If the German model is missing, regenerate:
+If the default audio device changes during a meeting, the running `ffmpeg` process keeps
+using the sources selected at startup.
+
+## German Whisper Model
+
+`meetingrec` looks for a local German CTranslate2 model at:
+
+```text
+models/whisper-de-turbo-ct2/
+```
+
+If that directory is absent, it uses the multilingual faster-whisper model ID configured
+in `meetingrec.py`.
+
+To create the German model locally:
 
 ```bash
-cd ~/tools/meetingrec
 uv run ct2-transformers-converter \
   --model primeline/whisper-large-v3-turbo-german \
   --output_dir models/whisper-de-turbo-ct2 \
@@ -93,3 +157,21 @@ uv run ct2-transformers-converter \
                vocab.json merges.txt normalizer.json added_tokens.json special_tokens_map.json \
   --quantization float16 --force
 ```
+
+Model files are large and are intentionally ignored by git.
+
+## Troubleshooting
+
+- `ffmpeg` cannot open an input: run `pactl list short sources` and pass explicit
+  `--mic` and `--system` values.
+- No system audio: use a `.monitor` source for `--system`.
+- CUDA errors: verify the NVIDIA driver/CUDA runtime and consider changing
+  `device="cuda"` or `COMPUTE_TYPE` in `meetingrec.py` for your hardware.
+- Claude summary fails: run `claude --print "hello"` to verify the Claude CLI is
+  installed and authenticated in the same shell.
+- Diarization is not implemented. Adding speaker labels would require a separate
+  diarization model and its own license/token review.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
