@@ -37,7 +37,7 @@ Install `uv` from the official Astral instructions if it is not already availabl
 ## Install
 
 ```bash
-git clone https://github.com/tue-Jonas/meetingrec.git
+git clone https://github.com/TueJon/meetingrec.git
 cd meetingrec
 uv sync
 ```
