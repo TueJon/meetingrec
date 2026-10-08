@@ -61,9 +61,11 @@ def transcript_lines(transcript: Transcript) -> list[str]:
 
 
 def participants(transcript: Transcript) -> list[str]:
+    """Speakers in order of first appearance; unattributed speech ("?") is not a participant."""
     seen: dict[str, None] = {}
     for t in turns(transcript):
-        seen.setdefault(t.speaker, None)
+        if t.speaker != "?":
+            seen.setdefault(t.speaker, None)
     return list(seen)
 
 

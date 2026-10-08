@@ -75,7 +75,11 @@ def load_model(cfg: Config, model_id: str):
 
 def wav_duration(path: Path) -> float:
     with wave.open(str(path)) as fh:
-        return fh.getnframes() / fh.getframerate()
+        # Streamed WAVs (ffmpeg stopped by Ctrl+C) carry a bogus maximal frame
+        # count in the header; the file size bounds the real one.
+        frame_bytes = fh.getnchannels() * fh.getsampwidth()
+        frames = min(fh.getnframes(), path.stat().st_size // frame_bytes)
+        return frames / fh.getframerate()
 
 
 def detect_language(model, wav: Path) -> str:
@@ -92,13 +96,23 @@ def decode_track(
     options: dict = {
         "language": language,
         "beam_size": cfg.asr.beam_size,
+        # The temperature fallback samples best_of candidates; 5 of them on top of a
+        # glossary prompt exhausted a 6 GB card on a 48-minute meeting.
+        "best_of": 1,
         "vad_filter": True,
         "condition_on_previous_text": False,
         "word_timestamps": True,
     }
     if cfg.glossary:
         options["hotwords"] = ", ".join(cfg.glossary)
-    raw, _ = model.transcribe(str(wav), **options)
+    try:
+        raw = list(model.transcribe(str(wav), **options)[0])
+    except RuntimeError as exc:
+        if "out of memory" not in str(exc) or "hotwords" not in options:
+            raise
+        click.echo(f"[asr] {role}: GPU out of memory; retrying without glossary hotwords", err=True)
+        del options["hotwords"]
+        raw = list(model.transcribe(str(wav), **options)[0])
     speaker = "self" if role == "mic" else None
     return [
         Segment(
