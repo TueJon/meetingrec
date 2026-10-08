@@ -1,25 +1,61 @@
 [project]
 name = "meetingrec"
-version = "0.1.0"
-description = "Local meeting recorder + transcriber + Claude summarizer (German-first)"
+version = "0.2.0"
+description = "Local meeting recorder for Linux: synced mic, system audio and screen capture, Whisper transcription, speaker diarization and naming, Claude-written minutes"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "MIT"
 authors = [
     { name = "Jonas Tüchler" },
 ]
 dependencies = [
-    "faster-whisper>=1.2.0",
     "click>=8.1.0",
-    "huggingface-hub>=0.27.0",
-    "transformers>=4.40.0",
+    "faster-whisper>=1.2.1",
+    "jeepney>=0.9.0",
+    "numpy>=1.26",
+    "nvidia-cublas-cu12>=12.4 ; sys_platform == 'linux'",
+]
+
+[project.optional-dependencies]
+diarize = [
+    "pyannote.audio>=4.0.7",
+    "torch>=2.8",
+    "torchaudio>=2.8",
 ]
 
 [project.scripts]
-meetingrec = "meetingrec:cli"
+meetingrec = "meetingrec.cli:cli"
+
+# Recent PyTorch CUDA 12.8/13 wheels dropped Pascal (sm_6x) kernels; the cu126 wheels
+# still ship them, so diarization on a GTX 10xx card needs this index.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126", marker = "sys_platform == 'linux'" }
+torchaudio = { index = "pytorch-cu126", marker = "sys_platform == 'linux'" }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9",
+]
 
 [build-system]
 requires = ["setuptools>=82.0.1"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-py-modules = ["meetingrec"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,177 +1,175 @@
 # meetingrec
 
-Local meeting recorder, Whisper transcription, and Claude-powered meeting-summary CLI
-for Linux desktops.
+Local meeting recorder for Linux desktops. It records your microphone, the call's
+audio and (optionally) the screen in one synchronized file. It then transcribes each
+track with Whisper, tells the remote speakers apart, recognizes voices it has met
+before, and asks the Claude CLI for structured minutes. The tool checks those minutes
+against the transcript before writing them.
 
-`meetingrec` records microphone audio plus system audio, writes a local WAV file,
-transcribes it with `faster-whisper`, and asks the Claude CLI to produce structured
-meeting minutes. It is German-first by default and falls back to a multilingual
-Whisper model when the detected language is not German.
+German-first, works for any Whisper language. Everything except the summary runs locally.
 
-## Features
+## What you get per meeting
 
-- Records microphone and system audio together via `ffmpeg` and PulseAudio/PipeWire.
-- Produces `audio.wav`, `transcript.srt`, `transcript.txt`, and `summary.md`.
-- Uses a local CTranslate2 German Whisper model when available.
-- Falls back to a multilingual faster-whisper model for non-German meetings.
-- Summarizes through the installed Claude CLI; no API key is stored in this repo.
+```text
+~/Recordings/meetings/2026-10-08_141500_kickoff/
+  meeting.json      start time, tracks, sources
+  recording.mka     mic + system audio as two separate FLAC tracks
+  recording.mkv     … plus the screen as H.264 when recorded with --screen
+  notes.md          optional; your own notes, treated as authoritative by the summary
+  transcript.md     speaker-labelled transcript with timestamps
+  transcript.{txt,srt,vtt,json}
+  summary.md        minutes: summary, key points, decisions, to-dos, open questions
+  summary.json      the structured minutes plus validation results
+  frames/           screen keyframes the summary looked at
+```
+
+## How it works
+
+1. **Capture**: one GStreamer pipeline writes the microphone and the system-audio
+   monitor as separate tracks. With `--screen`, it also writes the PipeWire screen stream
+   from the xdg-desktop-portal ScreenCast API, encoded with NVENC or x264. All tracks
+   share one clock, so audio, video and transcript timestamps line up exactly.
+2. **Transcribe**: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) runs
+   `large-v3` on each track (`--fast` uses `large-v3-turbo`), with Silero VAD, word
+   timestamps, and your glossary as hotwords. The mic track is you. If the mic picks
+   up words that were played over loudspeakers at the same moment, they are dropped.
+3. **Diarize**: [pyannote community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
+   separates the remote speakers on the system track only.
+4. **Identify**: each remote speaker's voice embedding is compared with the voiceprints
+   you have stored. Known voices get their name. Unknown ones stay `SPEAKER_NN` until
+   you name them once.
+5. **Summarize**: the Claude CLI returns schema-checked JSON. The prompt includes:
+   - the meeting date, weekday and a calendar
+   - the list of known participant names
+   - your glossary and `notes.md`
+   - the screen keyframes
+
+   meetingrec then checks every item mechanically:
+   - owners must be known participants
+   - due dates must match the weekday that was said
+   - timestamps must exist
+   - quotes must appear in the transcript near their timestamp
+
+   Anything that fails is marked ⚠️ instead of being trusted.
 
 ## Requirements
 
-- Linux desktop with PipeWire or PulseAudio-compatible sources.
-- Python 3.12.
-- `uv` for dependency management.
-- `ffmpeg` and `pactl`.
-- NVIDIA GPU with CUDA support for the default `device="cuda"` configuration.
-- Claude CLI installed and authenticated, or an `ANTHROPIC_API_KEY` available to the
-  Claude CLI if you use API-key auth.
-
-Install system tools on Debian/Ubuntu-style systems:
-
-```bash
-sudo apt install ffmpeg pulseaudio-utils
-```
-
-Install `uv` from the official Astral instructions if it is not already available.
+- Linux with PipeWire (or PulseAudio) and GStreamer 1.22+ with the `good`/`bad`/`ugly`
+  plugin sets and `gstreamer1.0-pipewire` (screen capture). On Debian/Ubuntu:
+  `sudo apt install gstreamer1.0-pipewire gstreamer1.0-plugins-{good,bad,ugly} ffmpeg pulseaudio-utils`
+- A desktop with the xdg-desktop-portal ScreenCast API (GNOME, KDE) for `--screen`.
+- Python 3.12 and [uv](https://docs.astral.sh/uv/).
+- An NVIDIA GPU is strongly recommended. `large-v3` needs about 4 GB of VRAM in int8 and
+  runs at about 0.1× real time on a GTX 1060. CPU works, but slowly.
+- The [Claude CLI](https://docs.claude.com/en/docs/claude-code), logged in, for summaries.
 
 ## Install
 
 ```bash
 git clone https://github.com/TueJon/meetingrec.git
 cd meetingrec
-uv sync
-```
-
-Run the CLI directly:
-
-```bash
-uv run meetingrec --help
-```
-
-Optional shell shortcut:
-
-```bash
+uv sync                    # transcription only
+uv sync --extra diarize    # + speaker diarization (PyTorch, ~3 GB)
 ln -s "$PWD/meetingrec" ~/.local/bin/meetingrec
-meetingrec --help
+meetingrec doctor
 ```
 
-## Configuration
+Diarization uses a gated model. Accept its conditions on
+<https://huggingface.co/pyannote/speaker-diarization-community-1>, then run
+`uvx hf auth login` once. Without it, the remote speakers show as `Remote`.
 
-The tool does not read a `.env` file automatically. Use your shell environment for
-optional values consumed by the external tools:
-
-```bash
-cp .env.example .env
-# Edit .env if needed, then:
-set -a
-. ./.env
-set +a
-```
-
-Useful environment variables:
-
-- `ANTHROPIC_API_KEY`: optional, only needed if your Claude CLI uses API-key auth
-  instead of its normal logged-in OAuth session.
-- `HF_TOKEN`: optional, only needed for private or gated Hugging Face models.
-
-Generated recordings, transcripts, summaries, local env files, virtualenvs, and model
-weights are ignored by git.
+The `diarize` extra installs PyTorch from the CUDA 12.6 wheel index. That is the last
+one that still supports Pascal GPUs (GTX 10xx).
 
 ## Usage
 
-Record, transcribe, and summarize in one command. Press `Ctrl+C` to stop recording:
+```bash
+meetingrec full kickoff                  # record (Ctrl+C stops), then process
+meetingrec full demo --screen window     # also record one window (picker every time)
+meetingrec full demo --screen monitor    # record a monitor (picked once, remembered)
+meetingrec record customer-call          # record now …
+meetingrec process ~/Recordings/meetings/2026-10-08_*   # … process later (many dirs ok)
+meetingrec process --summary-only <dir>  # re-run naming, rendering and the summary
+meetingrec process --fast <dir>          # large-v3-turbo instead of large-v3
+```
+
+Name a speaker once and they are recognized in later meetings:
 
 ```bash
-uv run meetingrec full kickoff
+meetingrec speakers name <dir> SPEAKER_01 "Thomas"
+meetingrec process --summary-only <dir>
+meetingrec speakers list
+meetingrec speakers forget "Thomas"
 ```
 
-Record now and process later:
+Directories from meetingrec 0.1 (a single mixed `audio.wav`) can be processed too. They
+have no separate mic track, so every speaker goes through diarization.
 
-```bash
-uv run meetingrec record customer-call
-uv run meetingrec transcribe ~/Recordings/meetings/2026-04-25_*/audio.wav
-uv run meetingrec summarize ~/Recordings/meetings/2026-04-25_*/transcript.txt
+## Configuration
+
+Optional: `~/.config/meetingrec/config.toml`. All keys are optional; the values below
+are the defaults unless noted.
+
+```toml
+self_name = "Jonas"               # your name in transcripts (default "Ich"/"Me")
+language = "auto"                 # or "de", "en", …
+timezone = ""                     # IANA name for the summary's calendar; "" = local
+glossary = ["Narev", "Keycloak"]  # names + jargon, spelled right (hotwords + summary)
+participants = ["Thomas"]         # people who may own action items
+
+[capture]
+mic = ""                          # source name; "" = default source
+system = ""                       # monitor source; "" = monitor of the default sink
+video_fps = 2
+
+[asr]
+model = "large-v3"                # alias or any faster-whisper model id / path
+fast_model = "large-v3-turbo"
+device = "auto"                   # auto | cuda | cpu
+
+[diarization]
+enabled = true
+max_speakers = 6                  # optional hints (default: not set)
+
+[speakers]
+match_threshold = 0.55            # cosine similarity needed to auto-name a voice
+match_margin = 0.08               # … and lead over the second-best voiceprint
+
+[summary]
+model = ""                        # Claude CLI model alias; "" = CLI default
+effort = "medium"
+language = "auto"                 # auto | de | en
+max_keyframes = 12
 ```
 
-Force English output or skip the German model:
+List audio sources with `pactl list short sources`.
 
-```bash
-uv run meetingrec full standup --multilingual
-uv run meetingrec transcribe audio.wav --language en --multilingual
-uv run meetingrec summarize transcript.txt --language en
-```
+## Privacy
 
-Choose a different output root:
+This tool records conversations. Tell participants and follow your local law.
 
-```bash
-uv run meetingrec full demo --out-root /tmp/meetingrec-demo
-```
-
-Each meeting directory contains:
-
-```text
-audio.wav       16 kHz mono mix of mic + system audio
-transcript.srt  timestamped subtitles
-transcript.txt  plain transcript
-summary.md      structured Claude-generated minutes
-```
-
-## Audio Sources
-
-By default, capture uses the system default microphone and the monitor source for the
-current default sink. List sources with:
-
-```bash
-pactl list short sources
-```
-
-Use explicit sources when needed:
-
-```bash
-uv run meetingrec record meeting \
-  --mic alsa_input.usb-Example_Microphone.mono-fallback \
-  --system bluez_output.00_11_22_33_44_55.1.monitor
-```
-
-If the default audio device changes during a meeting, the running `ffmpeg` process keeps
-using the sources selected at startup.
-
-## German Whisper Model
-
-`meetingrec` looks for a local German CTranslate2 model at:
-
-```text
-models/whisper-de-turbo-ct2/
-```
-
-If that directory is absent, it uses the multilingual faster-whisper model ID configured
-in `meetingrec.py`.
-
-To create the German model locally:
-
-```bash
-uv run ct2-transformers-converter \
-  --model primeline/whisper-large-v3-turbo-german \
-  --output_dir models/whisper-de-turbo-ct2 \
-  --copy_files preprocessor_config.json generation_config.json tokenizer_config.json \
-               vocab.json merges.txt normalizer.json added_tokens.json special_tokens_map.json \
-  --quantization float16 --force
-```
-
-Model files are large and are intentionally ignored by git.
+- Recordings, transcripts and summaries stay under `~/Recordings/meetings/`. The
+  summary step sends the transcript, your notes and the selected keyframes to Claude
+  through your own Claude CLI login.
+- `--screen window` asks for a window every meeting. `--screen monitor` remembers the
+  monitor and records everything that appears on it, including notifications.
+- Voiceprints are biometric data. They are stored in
+  `~/.local/share/meetingrec/voices.json` (mode 600) and only ever compared locally.
 
 ## Troubleshooting
 
-- `ffmpeg` cannot open an input: run `pactl list short sources` and pass explicit
-  `--mic` and `--system` values.
-- No system audio: use a `.monitor` source for `--system`.
-- CUDA errors: verify the NVIDIA driver/CUDA runtime and consider changing
-  `device="cuda"` or `COMPUTE_TYPE` in `meetingrec.py` for your hardware.
-- Claude summary fails: run `claude --print "hello"` to verify the Claude CLI is
-  installed and authenticated in the same shell.
-- Diarization is not implemented. Adding speaker labels would require a separate
-  diarization model and its own license/token review.
+Run `meetingrec doctor` first. It checks GStreamer elements, audio sources, the
+ScreenCast portal, the GPU, cached models, Hugging Face access and the Claude CLI.
+
+- **Transcript misses speech or garbles names**: add the names and jargon to `glossary`.
+  Prefer `large-v3` over turbo. Avoid Whisper fine-tunes that do not keep timestamp
+  tokens: they can silently skip whole 30 s windows of long recordings.
+- **Your words appear twice**: use a headset. Echo filtering only removes near-identical
+  text.
+- **Screen picker appears every time with `--screen monitor`**: the stored token is
+  single-use and is renewed on every run. If the monitor layout changed, pick again once.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Model weights come with their own licenses: Whisper is
+MIT, and pyannote community-1 is CC-BY-4.0, gated.

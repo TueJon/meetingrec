@@ -5,4 +5,5 @@ set -euo pipefail
 script_path="$(readlink -f "${BASH_SOURCE[0]}")"
 project_dir="$(cd "$(dirname "$script_path")" && pwd)"
 
-exec uv run --project "$project_dir" meetingrec "$@"
+# --inexact keeps optional extras (e.g. diarize) installed by `uv sync --extra ...`.
+exec uv run --inexact --project "$project_dir" meetingrec "$@"

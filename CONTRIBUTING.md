@@ -5,14 +5,15 @@ Thanks for improving `meetingrec`.
 ## Development Setup
 
 ```bash
-uv sync
-uv run meetingrec --help
+uv sync --group dev
+uv run meetingrec doctor
 ```
 
-Run a syntax check before opening a pull request:
+Before opening a pull request, run the tests and lint:
 
 ```bash
-uv run python -m compileall meetingrec.py
+uv run pytest -q
+uv run ruff check src tests && uv run ruff format --check src tests
 ```
 
 ## Pull Request Expectations
