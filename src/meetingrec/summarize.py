@@ -79,24 +79,41 @@ SCHEMA = _obj(
 
 LABELS = {
     "de": {
-        "summary": "Zusammenfassung", "key_points": "Wichtigste Punkte", "decisions": "Entscheidungen",
-        "action_items": "To-dos", "open_questions": "Offene Fragen", "none": "keine",
-        "date": "Datum", "time": "Uhrzeit", "duration": "Dauer", "participants": "Teilnehmer",
+        "summary": "Zusammenfassung",
+        "key_points": "Wichtigste Punkte",
+        "decisions": "Entscheidungen",
+        "action_items": "To-dos",
+        "open_questions": "Offene Fragen",
+        "none": "keine",
+        "date": "Datum",
+        "time": "Uhrzeit",
+        "duration": "Dauer",
+        "participants": "Teilnehmer",
         "cols": ("Aufgabe", "Verantwortlich", "Frist", "Beleg"),
         "note": "Hinweis: Dieses Protokoll wurde automatisch erstellt. "
-                "Das Transkript ist die maßgebliche Quelle.",
-        "warnings": "Prüfhinweise", "task": "To-do", "quote_missing": "Zitat nicht im Transkript gefunden",
+        "Das Transkript ist die maßgebliche Quelle.",
+        "warnings": "Prüfhinweise",
+        "task": "To-do",
+        "quote_missing": "Zitat nicht im Transkript gefunden",
         "owner_unknown": "Verantwortliche/r „{}“ steht nicht in der Teilnehmerliste",
         "date_invalid": "Datum „{}“ ungültig, liegt vor dem Meeting oder passt nicht zum Wochentag; entfernt",
         "ref_invalid": "Zeitangabe „{}“ liegt außerhalb des Transkripts",
     },
     "en": {
-        "summary": "Summary", "key_points": "Key points", "decisions": "Decisions",
-        "action_items": "Action items", "open_questions": "Open questions", "none": "none",
-        "date": "Date", "time": "Time", "duration": "Duration", "participants": "Participants",
+        "summary": "Summary",
+        "key_points": "Key points",
+        "decisions": "Decisions",
+        "action_items": "Action items",
+        "open_questions": "Open questions",
+        "none": "none",
+        "date": "Date",
+        "time": "Time",
+        "duration": "Duration",
+        "participants": "Participants",
         "cols": ("Task", "Owner", "Due", "Evidence"),
         "note": "Note: these minutes are generated automatically. The transcript is the source of truth.",
-        "warnings": "Validation warnings", "task": "Action item",
+        "warnings": "Validation warnings",
+        "task": "Action item",
         "quote_missing": "quote not found in transcript",
         "owner_unknown": "owner “{}” is not in the participant list",
         "date_invalid": "date “{}” is invalid, precedes the meeting or contradicts the weekday; dropped",
@@ -172,7 +189,8 @@ def speaker_allow_list(transcript: Transcript, cfg: Config) -> tuple[list[str], 
     named = [i.name for i in transcript.speakers.values() if i.name]
     allowed = list(dict.fromkeys([*named, *cfg.participants, *([cfg.self_name] if cfg.self_name else [])]))
     unknown = [
-        n for n in render.participants(transcript)
+        n
+        for n in render.participants(transcript)
         if n not in allowed and (n in ("?", "Remote") or n in transcript.speakers)
     ]
     return allowed, unknown
@@ -193,7 +211,7 @@ def build_prompt(
         "",
         "## Rules",
         "- Use only facts from the transcript, the notes and the screen frames. Never invent anything.",
-        "- Resolve relative dates (\"next Thursday\", \"übernächste Woche\", \"in two weeks\") ONLY with the "
+        '- Resolve relative dates ("next Thursday", "übernächste Woche", "in two weeks") ONLY with the '
         "calendar below, counting from the meeting day. Keep the speaker's wording verbatim in due_phrase. "
         "If no date is stated, set due_phrase and due_date to null.",
         "- action_items[].owner must be exactly one name from the participant list, otherwise null. "
@@ -201,7 +219,7 @@ def build_prompt(
         "against the participant list and glossary instead of creating new people.",
         "- Every item cites the timestamp(s) (mm:ss or h:mm:ss, as in the transcript) where it was said. "
         "Every action item carries a short verbatim quote from the transcript and its timestamp in ref.",
-        f"- If a section has nothing, return an empty list (rendered as \"{LABELS[lang]['none']}\").",
+        f'- If a section has nothing, return an empty list (rendered as "{LABELS[lang]["none"]}").',
         "- summary: 2 to 4 sentences.",
         "",
         "## Meeting",
@@ -221,12 +239,16 @@ def build_prompt(
         parts += ["", "## Glossary (correct spellings)", ", ".join(cfg.glossary)]
     if notes:
         parts += [
-            "", "## Notes by the participant",
-            "Authoritative over the transcript for names, owners and dates.", "", notes,
+            "",
+            "## Notes by the participant",
+            "Authoritative over the transcript for names, owners and dates.",
+            "",
+            notes,
         ]
     if keyframes:
         parts += [
-            "", "## Screen frames",
+            "",
+            "## Screen frames",
             "Look at these images (Read tool) for on-screen facts: URLs, names, numbers, slide content.",
             *(f"[{render.format_ts(k.time)}] {k.path}" for k in keyframes),
         ]
@@ -239,8 +261,15 @@ def build_prompt(
 
 def claude_command(cfg: Config, session_dir: Path, with_frames: bool) -> list[str]:
     cmd = [
-        "claude", "--print", "--output-format", "json", "--json-schema", json.dumps(SCHEMA),
-        "--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands",
+        "claude",
+        "--print",
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(SCHEMA),
+        "--no-session-persistence",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
     ]
     if with_frames:
         cmd += ["--tools", "Read", "--allowedTools", "Read", "--add-dir", str(session_dir)]
@@ -302,8 +331,14 @@ def match_owner(owner: str | None, allowed: list[str]) -> str | None:
 _WEEKDAY_WORDS = {
     **{w.casefold(): i for i, w in enumerate(WEEKDAYS["de"])},
     **{w.casefold(): i for i, w in enumerate(WEEKDAYS["en"])},
-    "mittwochs": 2, "donnerstags": 3, "montags": 0, "dienstags": 1, "freitags": 4,
-    "samstags": 5, "sonntags": 6, "sonnabend": 5,
+    "mittwochs": 2,
+    "donnerstags": 3,
+    "montags": 0,
+    "dienstags": 1,
+    "freitags": 4,
+    "samstags": 5,
+    "sonntags": 6,
+    "sonnabend": 5,
 }
 _ABBREV = {a: i for lang in WEEKDAYS_SHORT.values() for i, a in enumerate(lang)}
 
@@ -408,10 +443,7 @@ def _cell(text: str) -> str:
 def _bullets(items: list[dict], labels: dict) -> list[str]:
     if not items:
         return [labels["none"]]
-    return [
-        f"- {i['text']} {_refs(i['refs'])}".rstrip() + (" ⚠️" if i["warnings"] else "")
-        for i in items
-    ]
+    return [f"- {i['text']} {_refs(i['refs'])}".rstrip() + (" ⚠️" if i["warnings"] else "") for i in items]
 
 
 def _todo_row(item: dict, lang: str) -> str:
@@ -440,9 +472,7 @@ def collect_warnings(result: dict, lang: str) -> list[str]:
     return found
 
 
-def render_markdown(
-    result: dict, session: Session, transcript: Transcript, cfg: Config, lang: str
-) -> str:
+def render_markdown(result: dict, session: Session, transcript: Transcript, cfg: Config, lang: str) -> str:
     labels = LABELS[lang]
     start = meeting_start(session, cfg)
     weekday = WEEKDAYS[lang][start.weekday()]
@@ -457,13 +487,29 @@ def render_markdown(
         f"- {labels['duration']}: {render.format_ts(duration_of(transcript))}",
         f"- {labels['participants']}: {', '.join(render.participants(transcript)) or '—'}",
         "",
-        f"## {labels['summary']}", "", result["summary"], "",
-        f"## {labels['key_points']}", "", *_bullets(result["key_points"], labels), "",
-        f"## {labels['decisions']}", "", *_bullets(result["decisions"], labels), "",
-        f"## {labels['action_items']}", "",
-        *(todos if result["action_items"] else [labels["none"]]), "",
-        f"## {labels['open_questions']}", "", *_bullets(result["open_questions"], labels), "",
-        "---", "", f"_{labels['note']}_",
+        f"## {labels['summary']}",
+        "",
+        result["summary"],
+        "",
+        f"## {labels['key_points']}",
+        "",
+        *_bullets(result["key_points"], labels),
+        "",
+        f"## {labels['decisions']}",
+        "",
+        *_bullets(result["decisions"], labels),
+        "",
+        f"## {labels['action_items']}",
+        "",
+        *(todos if result["action_items"] else [labels["none"]]),
+        "",
+        f"## {labels['open_questions']}",
+        "",
+        *_bullets(result["open_questions"], labels),
+        "",
+        "---",
+        "",
+        f"_{labels['note']}_",
     ]
     warnings = collect_warnings(result, lang)
     if warnings:
@@ -499,8 +545,12 @@ def summarize_session(
         "keyframes": [k.path for k in keyframes],
     }
     (session.dir / SUMMARY_JSON).write_text(
-        json.dumps({"meta": meta, "raw": claude.data, "result": result, "warnings": warnings},
-                   ensure_ascii=False, indent=1) + "\n"
+        json.dumps(
+            {"meta": meta, "raw": claude.data, "result": result, "warnings": warnings},
+            ensure_ascii=False,
+            indent=1,
+        )
+        + "\n"
     )
     out = session.dir / SUMMARY_MD
     out.write_text(render_markdown(result, session, transcript, cfg, lang))

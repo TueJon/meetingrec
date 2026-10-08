@@ -53,8 +53,23 @@ def scan_video(video: Path, work: Path) -> list[Frame]:
         f"scale={THUMB_W}:{THUMB_H}:flags=area,format=gray"
     )
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-copyts", "-i", str(video), "-an", "-vf", chain,
-         "-fps_mode", "passthrough", "-f", "rawvideo", str(raw)],
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-copyts",
+            "-i",
+            str(video),
+            "-an",
+            "-vf",
+            chain,
+            "-fps_mode",
+            "passthrough",
+            "-f",
+            "rawvideo",
+            str(raw),
+        ],
         check=True,
     )
     meta = _META.findall(scores.read_text())
@@ -62,8 +77,7 @@ def scan_video(video: Path, work: Path) -> list[Frame]:
     if len(data) != size * len(meta):
         raise RuntimeError(f"{video.name}: {len(meta)} scored frames but {len(data) // size} thumbnails")
     return [
-        Frame(int(n), float(t), float(s), data[i * size : (i + 1) * size])
-        for i, (n, t, s) in enumerate(meta)
+        Frame(int(n), float(t), float(s), data[i * size : (i + 1) * size]) for i, (n, t, s) in enumerate(meta)
     ]
 
 
@@ -74,8 +88,22 @@ def extract_jpegs(video: Path, numbers: list[int], dest: Path) -> list[Path]:
     script.write_text(f"select='{select}',scale='min({MAX_WIDTH},iw)':-2")
     pattern = dest / "tmp_%05d.jpg"
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-i", str(video), "-an", "-filter_script:v", str(script),
-         "-fps_mode", "passthrough", "-q:v", "3", str(pattern)],
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            str(video),
+            "-an",
+            "-filter_script:v",
+            str(script),
+            "-fps_mode",
+            "passthrough",
+            "-q:v",
+            "3",
+            str(pattern),
+        ],
         check=True,
     )
     script.unlink()

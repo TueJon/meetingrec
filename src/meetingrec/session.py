@@ -126,8 +126,23 @@ class Session:
         offset = _stream_start(src, t.stream)
         if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:
             subprocess.run(
-                ["ffmpeg", "-v", "error", "-y", "-i", str(src), "-map", f"0:a:{t.stream}",
-                 "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(out)],
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(src),
+                    "-map",
+                    f"0:a:{t.stream}",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(out),
+                ],
                 check=True,
             )
         return out, offset
@@ -135,8 +150,18 @@ class Session:
 
 def _stream_start(path: Path, stream: int) -> float:
     out = subprocess.check_output(
-        ["ffprobe", "-v", "error", "-select_streams", f"a:{stream}",
-         "-show_entries", "stream=start_time", "-of", "csv=p=0", str(path)],
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            f"a:{stream}",
+            "-show_entries",
+            "stream=start_time",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
         text=True,
     ).strip()
     try:
@@ -149,7 +174,7 @@ def _legacy_meta(d: Path) -> MeetingMeta:
     m = _DIR_TS.match(d.name)
     if m:
         started = dt.datetime.strptime(f"{m[1]} {m[2]}", "%Y-%m-%d %H%M%S").astimezone()
-        title = d.name[m.end():].lstrip("_") or "meeting"
+        title = d.name[m.end() :].lstrip("_") or "meeting"
     else:
         started = dt.datetime.fromtimestamp((d / LEGACY_AUDIO).stat().st_mtime).astimezone()
         title = d.name

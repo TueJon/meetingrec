@@ -14,14 +14,21 @@ from .session import Session
 
 
 @click.group()
-@click.option("--config", "config_path", type=click.Path(path_type=Path), help="Config file (default: ~/.config/meetingrec/config.toml).")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path),
+    help="Config file (default: ~/.config/meetingrec/config.toml).",
+)
 @click.pass_context
 def cli(ctx: click.Context, config_path: Path | None) -> None:
     """Record, transcribe, and summarize meetings on Linux."""
     ctx.obj = load_config(config_path)
 
 
-def _record(cfg, title: str, out_root: Path | None, screen: str | None, mic: str | None, system: str | None) -> Session:
+def _record(
+    cfg, title: str, out_root: Path | None, screen: str | None, mic: str | None, system: str | None
+) -> Session:
     from .capture.portal import ScreenCastCancelled
     from .capture.recorder import record
 
@@ -35,7 +42,9 @@ def _record(cfg, title: str, out_root: Path | None, screen: str | None, mic: str
 
 
 _screen_option = click.option(
-    "--screen", type=click.Choice(["window", "monitor"]), default=None,
+    "--screen",
+    type=click.Choice(["window", "monitor"]),
+    default=None,
     help="Also record the screen in sync: pick a window (asks every time) or a monitor (remembered).",
 )
 
@@ -70,7 +79,11 @@ def full(cfg, title, out_root, screen, mic, system, fast) -> None:
 @cli.command()
 @click.argument("meetings", nargs=-1, required=True, type=click.Path(exists=True, path_type=Path))
 @click.option("--fast", is_flag=True, help="Use the faster, less accurate ASR model.")
-@click.option("--summary-only", is_flag=True, help="Reuse transcript.json; only re-run naming, rendering, and the summary.")
+@click.option(
+    "--summary-only",
+    is_flag=True,
+    help="Reuse transcript.json; only re-run naming, rendering, and the summary.",
+)
 @click.option("--no-summary", is_flag=True)
 @click.option("--no-diarize", is_flag=True)
 @click.option("--no-visual", is_flag=True, help="Do not send screen keyframes to the summarizer.")
@@ -83,8 +96,13 @@ def process(cfg, meetings, fast, summary_only, no_summary, no_diarize, no_visual
         click.echo(f"== {session.dir.name}")
         try:
             pipeline.process(
-                session, cfg, fast=fast, retranscribe=not summary_only,
-                diarize=not no_diarize, summarize=not no_summary, visual=not no_visual,
+                session,
+                cfg,
+                fast=fast,
+                retranscribe=not summary_only,
+                diarize=not no_diarize,
+                summarize=not no_summary,
+                visual=not no_visual,
             )
         except Exception as exc:  # keep going through a batch
             failed += 1
@@ -120,7 +138,9 @@ def speakers_name(cfg, meeting, label, name, no_enroll) -> None:
     db = speakers.VoiceDB.load()
     speakers.assign_name(transcript, label, name, db=None if no_enroll else db)
     render.write_transcript(session, transcript)
-    click.echo(f"{label} -> {name}. Re-run `meetingrec process --summary-only {session.dir}` to refresh the summary.")
+    click.echo(
+        f"{label} -> {name}. Re-run `meetingrec process --summary-only {session.dir}` to refresh the summary."
+    )
 
 
 @speakers_group.command(name="forget")

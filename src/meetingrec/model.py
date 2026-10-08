@@ -65,8 +65,7 @@ class Transcript:
         return cls(
             language=data["language"],
             segments=[
-                Segment(**{**s, "words": [Word(**w) for w in s.get("words", [])]})
-                for s in data["segments"]
+                Segment(**{**s, "words": [Word(**w) for w in s.get("words", [])]}) for s in data["segments"]
             ],
             speakers={k: SpeakerInfo(**v) for k, v in data.get("speakers", {}).items()},
             asr_model=data.get("asr_model", ""),

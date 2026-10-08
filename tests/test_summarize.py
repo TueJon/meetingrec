@@ -127,13 +127,20 @@ def model_output(**over) -> dict:
         "decisions": [],
         "action_items": [
             {
-                "task": "Release Notes schreiben", "owner": "Jonas",
-                "due_phrase": "nächste Woche Donnerstag", "due_date": "2026-09-24",
-                "quote": "Release Notes bis nächste Woche Donnerstag", "ref": "00:12",
+                "task": "Release Notes schreiben",
+                "owner": "Jonas",
+                "due_phrase": "nächste Woche Donnerstag",
+                "due_date": "2026-09-24",
+                "quote": "Release Notes bis nächste Woche Donnerstag",
+                "ref": "00:12",
             },
             {
-                "task": "Server prüfen", "owner": "Peter", "due_phrase": "nächste Woche Donnerstag",
-                "due_date": "2026-10-24", "quote": "Server prüfen lassen", "ref": "09:99:99",
+                "task": "Server prüfen",
+                "owner": "Peter",
+                "due_phrase": "nächste Woche Donnerstag",
+                "due_date": "2026-10-24",
+                "quote": "Server prüfen lassen",
+                "ref": "09:99:99",
             },
         ],
         "open_questions": [{"text": "Wer prüft den Server?", "refs": ["00:40", "30:00"]}],
@@ -167,9 +174,16 @@ def test_prompt_context(tmp_path):
     cfg.glossary = ["Kubernetes"]
     prompt = sm.build_prompt(session, make_transcript(), cfg, [Keyframe(65, "frames/kf_65.jpg")], "de")
     for needle in (
-        "Monday 2026-09-14 10:00 (UTC+02:00)", "Do 2026-09-17", "Anna Berger, Jonas, Bernd Huber",
-        "SPEAKER_01", "Kubernetes", "Authoritative", "Anna ist die Projektleiterin.",
-        "[01:05] frames/kf_65.jpg", "[00:12] Jonas: Ich kümmere", "Write all text in German",
+        "Monday 2026-09-14 10:00 (UTC+02:00)",
+        "Do 2026-09-17",
+        "Anna Berger, Jonas, Bernd Huber",
+        "SPEAKER_01",
+        "Kubernetes",
+        "Authoritative",
+        "Anna ist die Projektleiterin.",
+        "[01:05] frames/kf_65.jpg",
+        "[00:12] Jonas: Ich kümmere",
+        "Write all text in German",
     ):
         assert needle in prompt, needle
     assert "Screen frames" not in sm.build_prompt(session, make_transcript(), cfg, [], "de")
@@ -194,8 +208,13 @@ def proc(stdout="", stderr="", code=0):
 
 
 def test_parse_envelope_ok():
-    env = {"type": "result", "subtype": "success", "is_error": False,
-           "structured_output": {"summary": "x"}, "modelUsage": {"claude-opus-5-5": {}}}
+    env = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "structured_output": {"summary": "x"},
+        "modelUsage": {"claude-opus-5-5": {}},
+    }
     got = sm.parse_envelope(proc(json.dumps(env)))
     assert got.data == {"summary": "x"} and got.model == "claude-opus-5-5"
 
@@ -205,8 +224,12 @@ def test_parse_envelope_ok():
     [
         ("not json", "boom", 1, "boom"),
         (json.dumps({"is_error": True, "subtype": "success", "result": "Overloaded"}), "", 1, "Overloaded"),
-        (json.dumps({"is_error": True, "subtype": "error_during_execution", "errors": ["bad"]}),
-         "", 1, "bad"),
+        (
+            json.dumps({"is_error": True, "subtype": "error_during_execution", "errors": ["bad"]}),
+            "",
+            1,
+            "bad",
+        ),
         (json.dumps({"subtype": "success", "is_error": False, "result": "plain"}), "", 0, "no structured"),
     ],
 )
@@ -233,8 +256,12 @@ def test_end_to_end_fake_runner(tmp_path, lang):
 
     def runner(cmd, stdin, cwd):
         calls.append((cmd, stdin, cwd))
-        env = {"subtype": "success", "is_error": False, "structured_output": model_output(),
-               "modelUsage": {"fake-model": {}}}
+        env = {
+            "subtype": "success",
+            "is_error": False,
+            "structured_output": model_output(),
+            "modelUsage": {"fake-model": {}},
+        }
         return proc(json.dumps(env))
 
     out = sm.summarize_session(session, t, cfg_with(), keyframes=[], runner=runner)

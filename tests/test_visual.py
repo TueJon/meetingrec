@@ -25,8 +25,19 @@ def make_video(path: Path, offset: float) -> None:
     cmd = ["ffmpeg", "-v", "error", "-y"]
     for s in sources:
         cmd += ["-f", "lavfi", "-i", s]
-    cmd += ["-filter_complex", "concat=n=4:v=1:a=0", "-c:v", "libx264", "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p", "-output_ts_offset", str(offset), str(path)]
+    cmd += [
+        "-filter_complex",
+        "concat=n=4:v=1:a=0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        "yuv420p",
+        "-output_ts_offset",
+        str(offset),
+        str(path),
+    ]
     subprocess.run(cmd, check=True)
 
 
@@ -39,8 +50,9 @@ def video(tmp_path_factory) -> Path:
 
 def make_session(tmp_path: Path, video: Path) -> Session:
     (tmp_path / "recording.mkv").symlink_to(video)
-    meta = MeetingMeta(title="t", started_at="2026-09-14T10:00:00+02:00",
-                       video=VideoMeta("recording.mkv", "monitor", 2))
+    meta = MeetingMeta(
+        title="t", started_at="2026-09-14T10:00:00+02:00", video=VideoMeta("recording.mkv", "monitor", 2)
+    )
     return Session(tmp_path, meta)
 
 
