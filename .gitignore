@@ -22,7 +22,15 @@ venv/
 models/
 .cache/
 
-# Generated meeting artifacts
+# Generated meeting artifacts and voiceprints
+*.mka
+*.mkv
+meeting.json
+transcript.*
+summary.json
+frames/
+work/
+voices.json
 Recordings/
 recordings/
 meetings/
@@ -32,7 +40,6 @@ meetings/
 *.flac
 *.ogg
 *.srt
-transcript.txt
 summary.md
 
 # Local editor and OS files

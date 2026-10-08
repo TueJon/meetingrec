@@ -1,63 +1,72 @@
 # Agent Instructions
 
-`meetingrec` is a small Python CLI for local meeting recording, Whisper
-transcription, and Claude CLI summarization.
+`meetingrec` is a Python CLI for local meeting capture (mic, system audio, screen),
+Whisper transcription, pyannote diarization, voiceprint-based speaker naming, and
+validated Claude CLI minutes.
 
 ## Architecture
 
-- `meetingrec.py` contains the Click command group and all runtime behavior.
-- `meetingrec` is a portable shell wrapper for running the CLI through `uv`.
-- `pyproject.toml` defines Python 3.12 dependencies and the `meetingrec` console
-  script.
-- `uv.lock` is committed and should be updated whenever dependencies change.
-- `models/whisper-de-turbo-ct2/` is an optional local CTranslate2 model directory and
-  must never be committed.
+`src/meetingrec/`:
 
-Runtime flow:
-
-1. `record_audio()` captures microphone and system audio with `ffmpeg` PulseAudio
-   inputs and writes a 16 kHz mono WAV file.
-2. `transcribe_audio()` loads faster-whisper/CTranslate2, writes `transcript.srt` and
-   `transcript.txt`, and reloads a multilingual model when German-first detection does
-   not fit.
-3. `summarize_transcript()` sends the transcript to `claude --print --effort low` and
-   writes `summary.md`.
+- `model.py`: the shared data model (`Transcript`, `Segment`, `Word`, `SpeakerInfo`,
+  `Keyframe`). All times are seconds on the meeting timeline, where 0 is the moment
+  the capture pipeline started.
+- `config.py`: `~/.config/meetingrec/config.toml`. Unknown keys are errors.
+- `session.py`: the meeting directory and `meeting.json`. Also extracts each track to
+  a 16 kHz WAV, with its start offset, and loads 0.1 directories (`audio.wav`) as a
+  single `mixed` track.
+- `capture/portal.py`: the xdg-desktop-portal ScreenCast handshake (jeepney).
+- `capture/recorder.py`: one `gst-launch-1.0 -e` pipeline writes `recording.mka` or
+  `recording.mkv`. Audio tracks are tagged `mic`/`system`, and the stream indices are
+  mapped from those tags after the recording stops.
+- `transcribe.py`: faster-whisper per track, plus echo dropping on the mic track.
+- `diarize.py`: pyannote on the `system` (or `mixed`) track, and assignment of
+  speakers per word.
+- `speakers.py`: the voiceprint DB (`~/.local/share/meetingrec/voices.json`) and
+  naming.
+- `render.py`: the transcript outputs and `transcript_lines()`, which the summary
+  consumes.
+- `visual.py`: screen keyframes for the summary.
+- `summarize.py`: the Claude CLI call (`--json-schema`), deterministic validation,
+  and the summary renderers.
+- `pipeline.py`: processing order. `cli.py`: Click commands. `doctor.py`:
+  environment checks.
 
 ## Commands
 
 ```bash
-uv sync
-uv run meetingrec --help
-uv run python -m compileall meetingrec.py
+uv sync --group dev            # add --extra diarize for pyannote/PyTorch
+uv run pytest -q
+uv run ruff check src tests && uv run ruff format --check src tests
+uv run meetingrec doctor
 ```
 
-Manual smoke commands that require local audio/GPU/Claude setup:
-
-```bash
-uv run meetingrec record smoke --out-root /tmp/meetingrec-smoke
-uv run meetingrec transcribe /path/to/audio.wav --multilingual
-uv run meetingrec summarize /path/to/transcript.txt --language de
-```
+Manual smoke tests need real audio, a GPU or the Claude CLI:
+`meetingrec record smoke --out-root /tmp/mr`, then `meetingrec process /tmp/mr/*`.
+`--screen` opens the desktop's screen picker, so it can only be tested with a human
+at the machine.
 
 ## Conventions
 
-- Keep the CLI dependency-light. Do not add services, daemons, databases, or network
-  APIs without a clear product reason.
-- Prefer explicit command-line options over hidden machine-specific defaults.
-- Do not hardcode user home directories, hostnames, customer names, or private TWB
-  paths.
-- Keep generated meeting artifacts out of git: audio, transcripts, summaries, local
-  model weights, Hugging Face caches, and `.env` files are ignored for a reason.
-- If a change touches dependencies, run `uv lock` and check that no avoidable
-  proprietary or copyleft runtime dependency was introduced.
-- If changing prompts, keep German output strong by default and preserve the English
-  path for non-German transcripts.
+- Measure ASR changes on real audio, never by reading the text. Compare words per
+  speech-minute and coverage against a baseline. A fluent transcript can be missing
+  half the speech (this happened with a German Whisper fine-tune in 0.1).
+- Summary facts must be checkable. Anything the model could get wrong mechanically
+  (owners, dates, timestamps, quotes) is validated in Python and flagged, never
+  silently trusted.
+- Keep the CLI dependency-light. Add no services, daemons or databases. Heavy
+  optional features go behind extras.
+- Never hardcode user home directories, hostnames, customer names, or private paths.
+- Keep German output strong by default and preserve the English path.
+- When dependencies change, run `uv lock`. Check licenses: no avoidable copyleft or
+  proprietary runtime dependency.
 
 ## Security Notes
 
-- This tool records private conversations. Treat test recordings and transcripts as
-  sensitive local data.
-- The repo must remain free of API keys, Claude/OpenAI tokens, Hugging Face tokens,
-  `.env` files, recordings, transcripts, and summaries.
-- Before making the repository public or cutting a release, scan both the working tree
-  and git history for secrets and private meeting artifacts.
+- This tool records private conversations and stores voiceprints, which are
+  biometric data. Treat test recordings, transcripts and `voices.json` as sensitive
+  local data.
+- The repo must never contain API keys or tokens, `.env` files, recordings,
+  transcripts, summaries, frames, or voiceprints.
+- Before a release, scan the working tree and the git history for secrets and
+  private meeting artifacts.
