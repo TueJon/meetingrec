@@ -194,8 +194,7 @@ def _writable(path: Path) -> bool:
 
 
 def check_config(cfg: Config) -> list[Result]:
-    path = config_dir() / "config.toml"
-    where = str(path) if path.exists() else f"{path} (absent, defaults in use)"
+    where = str(cfg.source) if cfg.source else f"{config_dir() / 'config.toml'} (absent, defaults in use)"
     results = [_ok(f"config: {where}, glossary {len(cfg.glossary)} term(s)")]
     if _writable(cfg.out_root):
         results.append(_ok(f"out_root writable: {cfg.out_root}"))

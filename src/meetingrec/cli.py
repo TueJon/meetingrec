@@ -22,10 +22,14 @@ def cli(ctx: click.Context, config_path: Path | None) -> None:
 
 
 def _record(cfg, title: str, out_root: Path | None, screen: str | None, mic: str | None, system: str | None) -> Session:
+    from .capture.portal import ScreenCastCancelled
     from .capture.recorder import record
 
     session = Session.create(out_root or cfg.out_root, title, dt.datetime.now().astimezone())
-    record(session, cfg, screen=screen, mic=mic, system=system)
+    try:
+        record(session, cfg, screen=screen, mic=mic, system=system)
+    except ScreenCastCancelled:
+        raise click.ClickException("screen selection cancelled; nothing was recorded") from None
     click.echo(f"\nSaved: {session.dir}")
     return session
 

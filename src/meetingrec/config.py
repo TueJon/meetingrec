@@ -71,10 +71,12 @@ class Config:
     diarization: DiarizationConfig = field(default_factory=DiarizationConfig)
     speakers: SpeakersConfig = field(default_factory=SpeakersConfig)
     summary: SummaryConfig = field(default_factory=SummaryConfig)
+    # Where this config was loaded from; set by load_config, not a config key.
+    source: Path | None = field(default=None, metadata={"internal": True})
 
 
 def _apply(obj, data: dict, where: str) -> None:
-    known = {f.name: f for f in fields(obj)}
+    known = {f.name: f for f in fields(obj) if not f.metadata.get("internal")}
     for key, value in data.items():
         if key not in known:
             raise ValueError(f"unknown config key {where}{key}")
@@ -95,4 +97,5 @@ def load_config(path: Path | None = None) -> Config:
     if path.exists():
         with path.open("rb") as fh:
             _apply(cfg, tomllib.load(fh), "")
+        cfg.source = path
     return cfg
