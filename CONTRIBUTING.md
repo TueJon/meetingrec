@@ -22,7 +22,7 @@ uv run ruff check src tests && uv run ruff format --check src tests
   credentials.
 - Keep generated artifacts outside the repo or under ignored paths.
 - Document new runtime dependencies in `README.md`.
-- Update `AGENTS.md` when architecture, commands, or conventions change.
+- Update `docs/architecture.md` when the architecture changes, and `AGENTS.md` when commands or conventions change.
 
 ## Security
 
