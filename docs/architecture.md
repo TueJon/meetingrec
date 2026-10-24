@@ -1,7 +1,5 @@
 # Architecture
 
-Moved verbatim from AGENTS.md.
-
 `src/meetingrec/`:
 
 - `model.py`: the shared data model (`Transcript`, `Segment`, `Word`, `SpeakerInfo`,

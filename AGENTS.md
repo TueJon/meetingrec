@@ -7,6 +7,8 @@
 - Measure ASR changes on real audio, never by reading the text. Compare words per
   speech-minute and coverage against a baseline. A fluent transcript can be missing
   half the speech (this happened with a German Whisper fine-tune in 0.1).
+  Produce the audio with `meetingrec record smoke --out-root /tmp/mr`, then
+  `meetingrec process /tmp/mr/*` (needs real audio, a GPU and the Claude CLI).
 - Summary facts must be checkable. Anything the model could get wrong mechanically
   (owners, dates, timestamps, quotes) is validated in Python and flagged, never
   silently trusted.
