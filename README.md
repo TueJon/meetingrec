@@ -26,8 +26,9 @@ German-first, works for any Whisper language. Everything except the summary runs
 ## How it works
 
 1. **Capture**: one GStreamer pipeline writes the microphone and the system-audio
-   monitor as separate tracks. With `--screen`, it also writes the PipeWire screen stream
-   from the xdg-desktop-portal ScreenCast API, encoded with NVENC or x264. All tracks
+   monitor as separate tracks. With `--screen`, it also writes the screen, encoded with
+   NVENC or x264: the PipeWire stream from the xdg-desktop-portal ScreenCast API, or
+   `ximagesrc` on X11 sessions. All tracks
    share one clock, so audio, video and transcript timestamps line up exactly.
 2. **Transcribe**: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) runs
    `large-v3` on each track (`--fast` uses `large-v3-turbo`), with Silero VAD, word
@@ -57,7 +58,8 @@ German-first, works for any Whisper language. Everything except the summary runs
 - Linux with PipeWire (or PulseAudio) and GStreamer 1.22+ with the `good`/`bad`/`ugly`
   plugin sets and `gstreamer1.0-pipewire` (screen capture). On Debian/Ubuntu:
   `sudo apt install gstreamer1.0-pipewire gstreamer1.0-plugins-{good,bad,ugly} ffmpeg pulseaudio-utils`
-- A desktop with the xdg-desktop-portal ScreenCast API (GNOME, KDE) for `--screen`.
+- For `--screen`: a Wayland desktop with the xdg-desktop-portal ScreenCast API (GNOME, KDE),
+  or an X11 session with `xdotool` and `xrandr` (`sudo apt install xdotool x11-xserver-utils`).
 - Python 3.12 and [uv](https://docs.astral.sh/uv/).
 - An NVIDIA GPU is strongly recommended. `large-v3` needs about 4 GB of VRAM in int8 and
   runs at about 0.1× real time on a GTX 1060. CPU works, but slowly.
@@ -152,7 +154,9 @@ This tool records conversations. Tell participants and follow your local law.
   summary step sends the transcript, your notes and the selected keyframes to Claude
   through your own Claude CLI login.
 - `--screen window` asks for a window every meeting. `--screen monitor` remembers the
-  monitor and records everything that appears on it, including notifications.
+  monitor and records everything that appears on it, including notifications. On X11 the
+  window is clicked and the monitor typed in the terminal; the monitor is remembered in
+  `~/.local/share/meetingrec/x11-monitor` (delete it to choose again).
 - Voiceprints are biometric data. They are stored in
   `~/.local/share/meetingrec/voices.json` (mode 600) and only ever compared locally.
 

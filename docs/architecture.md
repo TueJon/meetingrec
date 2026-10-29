@@ -10,6 +10,8 @@
   a 16 kHz WAV, with its start offset, and loads 0.1 directories (`audio.wav`) as a
   single `mixed` track.
 - `capture/portal.py`: the xdg-desktop-portal ScreenCast handshake (jeepney).
+- `capture/x11.py`: window/monitor selection with xdotool/xrandr on X11 sessions, recorded
+  with `ximagesrc` (the portal shows no picker on GNOME/X11).
 - `capture/recorder.py`: one `gst-launch-1.0 -e` pipeline writes `recording.mka` or
   `recording.mkv`. Audio tracks are tagged `mic`/`system`, and the stream indices are
   mapped from those tags after the recording stops.

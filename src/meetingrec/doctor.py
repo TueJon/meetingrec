@@ -10,14 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .capture import portal, recorder
+from .capture import portal, recorder, x11
 from .config import Config, config_dir
 
 Level = Literal["ok", "warn", "fail"]
 _MARKS: dict[str, str] = {"ok": "✓", "warn": "⚠", "fail": "✗"}
 
 AUDIO_ELEMENTS = ("pulsesrc", "flacenc", "matroskamux", "audioconvert", "audioresample")
-SCREEN_ELEMENTS = ("pipewiresrc", "videorate", "h264parse")
+SCREEN_ELEMENTS = ("videorate", "h264parse")
 VIDEO_ENCODERS = ("nvh264enc", "x264enc")
 ASR_REPOS = {
     "large-v3": "Systran/faster-whisper-large-v3",
@@ -74,7 +74,8 @@ def check_gstreamer() -> list[Result]:
         results.append(_fail(f"GStreamer audio elements missing: {', '.join(missing)}"))
     else:
         results.append(_ok("GStreamer audio elements"))
-    missing = [e for e in SCREEN_ELEMENTS if not _has_element(e)]
+    source_element = "ximagesrc" if x11.is_x11_session() else "pipewiresrc"
+    missing = [e for e in (source_element, *SCREEN_ELEMENTS) if not _has_element(e)]
     encoders = [e for e in VIDEO_ENCODERS if _has_element(e)]
     if missing or not encoders:
         need = missing + ([] if encoders else ["a video encoder (nvh264enc or x264enc)"])
@@ -100,6 +101,18 @@ def check_portal() -> list[Result]:
     stored = portal.restore_token_path().exists()
     note = "monitor choice remembered" if stored else "no monitor remembered yet"
     return [_ok(f"ScreenCast portal v{version}, {note}")]
+
+
+def check_x11_screen() -> list[Result]:
+    missing = [tool for tool in ("xdotool", "xrandr") if not shutil.which(tool)]
+    if missing:
+        return [_warn(f"X11 screen capture unavailable, missing: {', '.join(missing)}")]
+    note = "monitor choice remembered" if x11.monitor_choice_path().exists() else "no monitor remembered yet"
+    return [_ok(f"X11 screen capture (xdotool, xrandr), {note}")]
+
+
+def check_screen() -> list[Result]:
+    return check_x11_screen() if x11.is_x11_session() else check_portal()
 
 
 # ---- tools ------------------------------------------------------------------
@@ -210,7 +223,7 @@ def run_doctor(cfg: Config) -> int:
     results: list[Result] = [
         *check_gstreamer(),
         check_audio_sources(cfg),
-        *check_portal(),
+        *check_screen(),
         *check_ffmpeg(),
         check_cuda(),
         *check_asr_model(cfg),

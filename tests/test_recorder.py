@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from meetingrec.capture import recorder
+from meetingrec.capture import recorder, x11
 from meetingrec.capture.recorder import VideoSpec, build_pipeline
 
 OUT = Path("/tmp/x/recording.mka")
@@ -21,7 +21,8 @@ def test_audio_only_pipeline_has_two_tagged_flac_branches():
 
 
 def test_video_branch_uses_even_fixed_caps_and_keepalive():
-    video = VideoSpec(fd=7, node_id=42, width=1281, height=721, fps=2, encoder="x264enc")
+    source = recorder.pipewire_source(fd=7, node_id=42, fps=2)
+    video = VideoSpec(source=source, width=1281, height=721, fps=2, encoder="x264enc")
     argv = build_pipeline(mic="m", system="s", output=OUT, video=video)
     assert argv.count("mux.") == 3
     assert {"pipewiresrc", "fd=7", "path=42", "keepalive-time=500"} <= set(argv)
@@ -33,13 +34,17 @@ def test_video_branch_uses_even_fixed_caps_and_keepalive():
     )
 
 
-def test_video_source_override_replaces_pipewiresrc():
-    video = VideoSpec(0, 0, 640, 480, 2, "nvh264enc")
-    argv = build_pipeline(
-        mic="m", system="s", output=OUT, video=video, _video_source=["videotestsrc", "is-live=true"]
-    )
-    assert "videotestsrc" in argv
+def test_ximagesrc_source_is_used_as_given():
+    video = VideoSpec(x11.window_source(77), 640, 480, 2, "nvh264enc")
+    argv = build_pipeline(mic="m", system="s", output=OUT, video=video)
+    assert argv[argv.index("ximagesrc") : argv.index("ximagesrc") + 4] == [
+        "ximagesrc",
+        "xid=77",
+        "use-damage=false",
+        "show-pointer=true",
+    ]
     assert "pipewiresrc" not in argv
+    assert argv.index("ximagesrc") < argv.index("videoconvert") < argv.index("nvh264enc")
 
 
 def test_encoder_args_keyframe_every_ten_seconds():

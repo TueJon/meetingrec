@@ -11,12 +11,15 @@ import json
 import signal
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from .. import __version__
 from ..config import Config
 from ..session import Session, TrackMeta, VideoMeta
+from . import x11
 from .portal import ScreenCastCancelled, restore_token_path, screencast
 
 AUDIO_ROLES = ("mic", "system")
@@ -67,8 +70,7 @@ def resolve_sources(cfg: Config, mic: str | None, system: str | None) -> tuple[s
 
 @dataclass
 class VideoSpec:
-    fd: int
-    node_id: int
+    source: list[str]
     width: int
     height: int
     fps: int
@@ -138,10 +140,10 @@ def _audio_branch(source: str, role: str) -> list[str]:
     ]
 
 
-def _video_branch(video: VideoSpec, source: list[str]) -> list[str]:
+def _video_branch(video: VideoSpec) -> list[str]:
     w, h = _even(video.width), _even(video.height)
     return [
-        *source,
+        *video.source,
         "!",
         "queue",
         "!",
@@ -170,20 +172,11 @@ def build_pipeline(
     system: str,
     output: Path,
     video: VideoSpec | None = None,
-    _video_source: list[str] | None = None,
 ) -> list[str]:
-    """gst-launch-1.0 argv. `_video_source` replaces pipewiresrc (tests only)."""
     argv = ["gst-launch-1.0", "-q", "-e", "matroskamux", "name=mux", "!", "filesink", f"location={output}"]
     argv += _audio_branch(mic, "mic") + _audio_branch(system, "system")
     if video:
-        source = _video_source or [
-            "pipewiresrc",
-            f"fd={video.fd}",
-            f"path={video.node_id}",
-            "do-timestamp=true",
-            f"keepalive-time={1000 // video.fps}",
-        ]
-        argv += _video_branch(video, source)
+        argv += _video_branch(video)
     return argv
 
 
@@ -268,6 +261,33 @@ def _now() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def pipewire_source(fd: int, node_id: int, fps: int) -> list[str]:
+    return [
+        "pipewiresrc",
+        f"fd={fd}",
+        f"path={node_id}",
+        "do-timestamp=true",
+        f"keepalive-time={1000 // fps}",
+    ]
+
+
+@contextmanager
+def _screen_source(screen: str, fps: int) -> Iterator[tuple[list[str], int, int, str, tuple[int, ...]]]:
+    """(gst source elements, width, height, source type, fds to pass to gst-launch)."""
+    if x11.is_x11_session():
+        picked = x11.capture(screen)
+        yield picked.source, picked.width, picked.height, picked.source_type, ()
+        return
+    with screencast(screen, restore_token_path()) as sc:
+        yield (
+            pipewire_source(sc.fd, sc.node_id, fps),
+            sc.width or 1920,
+            sc.height or 1080,
+            sc.source_type,
+            (sc.fd,),
+        )
+
+
 def record(session: Session, cfg: Config, *, screen: str | None, mic: str | None, system: str | None) -> None:
     mic_src, system_src = resolve_sources(cfg, mic, system)
     output = session.path("recording.mkv" if screen else "recording.mka")
@@ -287,15 +307,13 @@ def record(session: Session, cfg: Config, *, screen: str | None, mic: str | None
     if screen == "monitor":
         print("Privacy: everything shown on the selected monitor is recorded, including notifications.")
     try:
-        with screencast(screen, restore_token_path()) as sc:
-            video = VideoSpec(
-                sc.fd, sc.node_id, sc.width or 1920, sc.height or 1080, cfg.capture.video_fps, encoder
-            )
-            session.meta.video = VideoMeta(file=output.name, source_type=sc.source_type, fps=video.fps)
-            print(f"screen: {sc.source_type} {video.width}x{video.height} @ {video.fps} fps ({encoder})")
+        with _screen_source(screen, cfg.capture.video_fps) as (source, width, height, source_type, fds):
+            video = VideoSpec(source, width, height, cfg.capture.video_fps, encoder)
+            session.meta.video = VideoMeta(file=output.name, source_type=source_type, fps=video.fps)
+            print(f"screen: {source_type} {video.width}x{video.height} @ {video.fps} fps ({encoder})")
             print(f"file:   {output}")
             argv = build_pipeline(mic=mic_src, system=system_src, output=output, video=video)
-            _capture(session, argv, output, (sc.fd,))
+            _capture(session, argv, output, fds)
     except ScreenCastCancelled:
         session.dir.rmdir()  # nothing was recorded
         raise
