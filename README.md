@@ -1,7 +1,8 @@
 # meetingrec
 
 Local meeting recorder for Linux desktops. It records your microphone, the call's
-audio and (optionally) the screen in one synchronized file. It then transcribes each
+audio (only the call app's, if you like) and (optionally) the screen in one synchronized
+file. It then transcribes each
 track with Whisper, tells the remote speakers apart, recognizes voices it has met
 before, and asks the Claude CLI for structured minutes. The tool checks those minutes
 against the transcript before writing them.
@@ -26,15 +27,22 @@ German-first, works for any Whisper language. Everything except the summary runs
 ## How it works
 
 1. **Capture**: one GStreamer pipeline writes the microphone and the system-audio
-   monitor as separate tracks. With `--screen`, it also writes the PipeWire screen stream
-   from the xdg-desktop-portal ScreenCast API, encoded with NVENC or x264. All tracks
+   monitor as separate tracks. With `--app`, the second track holds only one
+   application's audio (Teams, Meet in a browser, Discord): a private PipeWire sink is
+   linked to that app's playback streams, so music or videos elsewhere stay out. With
+   `--room` (in-person meetings), only the microphone is recorded. Capture dropouts
+   become silence instead of shifting the timeline, and a mic that delivers nothing
+   (muted, or stalling under load) is reported while you record. With `--screen`, it also writes the screen, encoded with
+   NVENC or x264: the PipeWire stream from the xdg-desktop-portal ScreenCast API, or
+   `ximagesrc` on X11 sessions. All tracks
    share one clock, so audio, video and transcript timestamps line up exactly.
 2. **Transcribe**: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) runs
    `large-v3` on each track (`--fast` uses `large-v3-turbo`), with Silero VAD, word
-   timestamps, and your glossary as hotwords. The mic track is you. If the mic picks
+   timestamps, and your glossary as hotwords. A `--room` recording skips VAD, which
+   drops far-field speech. The mic track is you. If the mic picks
    up words that were played over loudspeakers at the same moment, they are dropped.
 3. **Diarize**: [pyannote community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
-   separates the remote speakers on the system track only.
+   separates the remote speakers on the system track (or everyone on a `--room` track).
 4. **Identify**: each remote speaker's voice embedding is compared with the voiceprints
    you have stored. Known voices get their name. Unknown ones stay `SPEAKER_NN` until
    you name them once.
@@ -57,8 +65,11 @@ German-first, works for any Whisper language. Everything except the summary runs
 - Linux with PipeWire (or PulseAudio) and GStreamer 1.22+ with the `good`/`bad`/`ugly`
   plugin sets and `gstreamer1.0-pipewire` (screen capture). On Debian/Ubuntu:
   `sudo apt install gstreamer1.0-pipewire gstreamer1.0-plugins-{good,bad,ugly} ffmpeg pulseaudio-utils`
-- A desktop with the xdg-desktop-portal ScreenCast API (GNOME, KDE) for `--screen`.
+- For `--screen`: a Wayland desktop with the xdg-desktop-portal ScreenCast API (GNOME, KDE),
+  or an X11 session with `xdotool` and `xrandr` (`sudo apt install xdotool x11-xserver-utils`).
 - Python 3.12 and [uv](https://docs.astral.sh/uv/).
+- For the window (`meetingrec gui`): GTK 4 and libadwaita for the system Python,
+  `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`, and `wmctrl` on X11.
 - An NVIDIA GPU is strongly recommended. `large-v3` needs about 4 GB of VRAM in int8 and
   runs at about 0.1× real time on a GTX 1060. CPU works, but slowly.
 - The [Claude CLI](https://docs.claude.com/en/docs/claude-code), logged in, for summaries.
@@ -83,7 +94,16 @@ one that still supports Pascal GPUs (GTX 10xx).
 
 ## Usage
 
+`meetingrec gui` opens a window. **Quick start** records with your last setup;
+**Set up recording…** walks through meeting type (call or in the room), the call app,
+the microphone (with a live meter and mute check) and an optional window or monitor.
+While recording it shows levels and warnings, and afterwards opens the minutes. To get
+it in the app launcher: `cp meetingrec.desktop ~/.local/share/applications/`.
+
 ```bash
+meetingrec targets                       # mics, apps playing audio, windows, monitors
+meetingrec full standup --app chrome     # only the call app's audio (PID or binary name)
+meetingrec full workshop --room          # in person: microphone only, everyone diarized
 meetingrec full kickoff                  # record (Ctrl+C stops), then process
 meetingrec full demo --screen window     # also record one window (picker every time)
 meetingrec full demo --screen monitor    # record a monitor (picked once, remembered)
@@ -152,7 +172,11 @@ This tool records conversations. Tell participants and follow your local law.
   summary step sends the transcript, your notes and the selected keyframes to Claude
   through your own Claude CLI login.
 - `--screen window` asks for a window every meeting. `--screen monitor` remembers the
-  monitor and records everything that appears on it, including notifications.
+  monitor and records everything that appears on it, including notifications. On X11 the
+  window is clicked and the monitor typed in the terminal; the monitor is remembered in
+  `~/.local/share/meetingrec/x11-monitor` (delete it to choose again).
+- `--app` records only the chosen process tree. A browser is one app: Teams in Chrome
+  brings every Chrome tab's sound along, but not other browsers or apps.
 - Voiceprints are biometric data. They are stored in
   `~/.local/share/meetingrec/voices.json` (mode 600) and only ever compared locally.
 
@@ -164,6 +188,10 @@ ScreenCast portal, the GPU, cached models, Hugging Face access and the Claude CL
 - **Transcript misses speech or garbles names**: add the names and jargon to `glossary`.
   Prefer `large-v3` over turbo. Avoid Whisper fine-tunes that do not keep timestamp
   tokens: they can silently skip whole 30 s windows of long recordings.
+- **Transcript is a song, or someone else's video**: the system track records everything
+  the laptop plays. Use `--app` for calls and `--room` for in-person meetings.
+- **"The microphone is delivering no audio"**: it is muted, or the laptop is too busy and
+  the mic stalls. The gaps are kept as silence; close heavy jobs or use a USB mic.
 - **Your words appear twice**: use a headset. Echo filtering only removes near-identical
   text.
 - **Screen picker appears every time with `--screen monitor`**: the stored token is

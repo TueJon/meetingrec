@@ -29,6 +29,7 @@ def test_gstreamer_missing_is_required_failure(monkeypatch):
 
 
 def test_missing_screen_elements_only_warn(monkeypatch):
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
     monkeypatch.setattr(doctor.shutil, "which", lambda name: "/usr/bin/" + name)
     monkeypatch.setattr(doctor, "_has_element", lambda name: name != "pipewiresrc")
     levels = [r.level for r in doctor.check_gstreamer()]
@@ -115,3 +116,22 @@ def test_exit_code(monkeypatch, capsys, level, code):
     monkeypatch.setattr(doctor, "check_claude", lambda: doctor.Result("ok", "claude"))
     assert doctor.run_doctor(Config()) == code
     assert "audio" in capsys.readouterr().out
+
+
+def test_x11_session_checks_ximagesrc_instead_of_pipewiresrc(monkeypatch):
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(doctor, "_has_element", lambda name: name != "pipewiresrc")
+    assert [r.level for r in doctor.check_gstreamer()] == ["ok", "ok", "ok"]
+    monkeypatch.setattr(doctor, "_has_element", lambda name: name != "ximagesrc")
+    assert [r.level for r in doctor.check_gstreamer()] == ["ok", "ok", "warn"]
+
+
+def test_x11_screen_check_needs_xdotool_and_xrandr(monkeypatch):
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None if name == "xdotool" else "/usr/bin/x")
+    (result,) = doctor.check_screen()
+    assert result.level == "warn"
+    assert "xdotool" in result.text
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: "/usr/bin/" + name)
+    assert doctor.check_screen()[0].level == "ok"

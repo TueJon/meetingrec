@@ -1,6 +1,6 @@
 # Agent Instructions
 
-`meetingrec` is a Python CLI for local meeting capture, Whisper transcription, diarization, voiceprint speaker naming and validated Claude CLI minutes. Module notes (timeline convention, track tagging): `docs/architecture.md`. Checks: `uv run pytest -q`, `uv run ruff check`. Smoke tests with `--screen` need a human at the desktop (screen picker).
+`meetingrec` is a Python CLI for local meeting capture, Whisper transcription, diarization, voiceprint speaker naming and validated Claude CLI minutes. Module notes (timeline convention, track tagging): `docs/architecture.md`. Checks: `uv run pytest -q`, `uv run ruff check`. Smoke tests with `--screen` need a human at the desktop (portal picker, or an xdotool click on X11).
 
 ## Conventions
 

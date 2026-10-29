@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import sys
 from pathlib import Path
 
@@ -26,54 +27,117 @@ def cli(ctx: click.Context, config_path: Path | None) -> None:
     ctx.obj = load_config(config_path)
 
 
-def _record(
-    cfg, title: str, out_root: Path | None, screen: str | None, mic: str | None, system: str | None
-) -> Session:
+def _record(cfg, title: str, out_root: Path | None, events: bool, **options) -> Session:
     from .capture.portal import ScreenCastCancelled
-    from .capture.recorder import record
+    from .capture.recorder import json_event, print_event, record
 
+    emit = json_event if events else print_event
     session = Session.create(out_root or cfg.out_root, title, dt.datetime.now().astimezone())
     try:
-        record(session, cfg, screen=screen, mic=mic, system=system)
+        record(session, cfg, emit=emit, **options)
     except ScreenCastCancelled:
         raise click.ClickException("screen selection cancelled; nothing was recorded") from None
+    except RuntimeError:
+        if not any(session.dir.iterdir()):
+            session.dir.rmdir()
+        raise
+    emit({"event": "saved", "dir": str(session.dir)})
     click.echo(f"\nSaved: {session.dir}")
     return session
 
 
-_screen_option = click.option(
-    "--screen",
-    type=click.Choice(["window", "monitor"]),
-    default=None,
-    help="Also record the screen in sync: pick a window (asks every time) or a monitor (remembered).",
-)
+def _capture_options(fn):
+    for option in reversed(
+        [
+            click.argument("title", default="meeting"),
+            click.option("--out-root", type=click.Path(path_type=Path)),
+            click.option(
+                "--screen",
+                type=click.Choice(["window", "monitor"]),
+                default=None,
+                help="Also record the screen in sync: pick a window (asks every time) "
+                "or a monitor (remembered).",
+            ),
+            click.option(
+                "--window-id", type=int, help="X11: record this window instead of asking for a click."
+            ),
+            click.option("--monitor", help="X11: record this monitor (xrandr name) instead of asking."),
+            click.option("--mic", help="Microphone source (default: system default)."),
+            click.option("--system", help="System-audio monitor source (default: monitor of default sink)."),
+            click.option(
+                "--app",
+                help="Record only this application's audio instead of the system mix: a PID (e.g. of the "
+                "call window) or a binary name (chrome, teams-for-linux, Discord). See `meetingrec targets`.",
+            ),
+            click.option(
+                "--room",
+                is_flag=True,
+                help="In-person meeting: record the microphone only and diarize everyone on it.",
+            ),
+            click.option(
+                "--events", is_flag=True, help="Print JSON-lines events (levels, warnings) on stdout."
+            ),
+        ]
+    ):
+        fn = option(fn)
+    return fn
 
 
 @cli.command()
-@click.argument("title", default="meeting")
-@click.option("--out-root", type=click.Path(path_type=Path))
-@_screen_option
-@click.option("--mic", help="Microphone source (default: system default).")
-@click.option("--system", help="System-audio monitor source (default: monitor of default sink).")
+@_capture_options
 @click.pass_obj
-def record(cfg, title, out_root, screen, mic, system) -> None:
+def record(cfg, title, out_root, events, **options) -> None:
     """Record only. Ctrl+C stops."""
-    _record(cfg, title, out_root, screen, mic, system)
+    _record(cfg, title, out_root, events, **options)
 
 
 @cli.command()
-@click.argument("title", default="meeting")
-@click.option("--out-root", type=click.Path(path_type=Path))
-@_screen_option
-@click.option("--mic")
-@click.option("--system")
+@_capture_options
 @click.option("--fast", is_flag=True, help="Use the faster, less accurate ASR model.")
 @click.pass_obj
-def full(cfg, title, out_root, screen, mic, system, fast) -> None:
+def full(cfg, title, out_root, events, fast, **options) -> None:
     """Record, then transcribe, diarize, and summarize."""
-    session = _record(cfg, title, out_root, screen, mic, system)
+    session = _record(cfg, title, out_root, events, **options)
+    if events:
+        click.echo(json.dumps({"event": "processing", "dir": str(session.dir)}))
     pipeline.process(session, cfg, fast=fast)
+    if events:
+        click.echo(json.dumps({"event": "done", "dir": str(session.dir)}))
     click.echo(f"\nDone: {session.dir}")
+
+
+@cli.command()
+@click.option("--json", "as_json", is_flag=True)
+@click.pass_obj
+def targets(cfg, as_json) -> None:
+    """List what can be recorded: microphones, apps playing audio, windows and monitors."""
+    from .capture.targets import collect
+
+    found = {**collect(), "out_root": str(cfg.out_root)}
+    if as_json:
+        click.echo(json.dumps(found, indent=2))
+        return
+    click.echo(f"session: {found['session']}")
+    click.echo("microphones:")
+    for m in found["mics"]:
+        click.echo(f"  {'*' if m['default'] else ' '} {m['name']}  ({m['description']})")
+    click.echo("apps playing audio (--app):")
+    for a in found["apps"]:
+        click.echo(f"    {a['binary']:<20} pid {a['pid']}  {a['app']}: {a['media']}")
+    click.echo("windows (--window-id, --app <pid>):")
+    for w in found["windows"]:
+        click.echo(f"    {w['id']:<10} pid {w['pid']:<8} {'♪ ' if w['audio'] else '  '}{w['title']}")
+    click.echo("monitors (--monitor):")
+    for m in found["monitors"]:
+        click.echo(f"    {m['name']}  {m['width']}x{m['height']}")
+
+
+@cli.command()
+def gui() -> None:
+    """Open the recorder window (quick start or a guided setup)."""
+    from .gui_launcher import launch
+
+    launch()
 
 
 @cli.command()

@@ -174,8 +174,8 @@ def _turns(annotation) -> list[SpeakerTurn]:
 
 
 def diarization_track(session: Session) -> TrackRole | None:
-    """The remote participants' audio: the system track, else a legacy mixed track."""
-    for role in ("system", "mixed"):
+    """The audio with several speakers: the system track, a legacy mixed track, or the room mic."""
+    for role in ("system", "mixed", "room"):
         if session.track(role):
             return role
     return None

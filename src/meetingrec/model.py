@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Literal
 
-TrackRole = Literal["mic", "system", "mixed"]
+TrackRole = Literal["mic", "system", "mixed", "room"]
 
 
 @dataclass
