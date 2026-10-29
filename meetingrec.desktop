@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Meeting recorder
+Comment=Record a meeting, then get a transcript and minutes
+Exec=meetingrec gui
+Icon=audio-input-microphone
+Terminal=false
+Categories=AudioVideo;Audio;Recorder;
+StartupWMClass=io.github.tuejon.meetingrec

@@ -8,9 +8,12 @@ from meetingrec.capture.recorder import VideoSpec, build_pipeline
 OUT = Path("/tmp/x/recording.mka")
 
 
+AUDIO = [("mic", "m"), ("system", "s")]
+
+
 def test_audio_only_pipeline_has_two_tagged_flac_branches():
-    argv = build_pipeline(mic="mic0", system="sink0.monitor", output=OUT)
-    assert argv[:3] == ["gst-launch-1.0", "-q", "-e"]
+    argv = build_pipeline(audio=[("mic", "mic0"), ("system", "sink0.monitor")], output=OUT)
+    assert argv[:3] == ["gst-launch-1.0", "-m", "-e"]
     assert f"location={OUT}" in argv
     assert argv.count("flacenc") == 2
     assert argv.count("audio/x-raw,rate=48000,channels=1") == 2
@@ -20,10 +23,23 @@ def test_audio_only_pipeline_has_two_tagged_flac_branches():
     assert "pipewiresrc" not in argv
 
 
+def test_audio_branch_keeps_the_timeline_and_reports_levels():
+    argv = build_pipeline(audio=[("room", "mic0")], output=OUT)
+    assert argv.count("pulsesrc") == 1
+    assert "tags=title=room" in argv
+    assert f"buffer-time={recorder.PULSE_BUFFER_US}" in argv
+    assert (
+        argv.index("audio/x-raw,rate=48000,channels=1")
+        < argv.index("audiorate")
+        < argv.index("name=level_room")
+        < argv.index("flacenc")
+    )
+
+
 def test_video_branch_uses_even_fixed_caps_and_keepalive():
     source = recorder.pipewire_source(fd=7, node_id=42, fps=2)
     video = VideoSpec(source=source, width=1281, height=721, fps=2, encoder="x264enc")
-    argv = build_pipeline(mic="m", system="s", output=OUT, video=video)
+    argv = build_pipeline(audio=AUDIO, output=OUT, video=video)
     assert argv.count("mux.") == 3
     assert {"pipewiresrc", "fd=7", "path=42", "keepalive-time=500"} <= set(argv)
     assert "video/x-raw,framerate=2/1" in argv
@@ -36,7 +52,7 @@ def test_video_branch_uses_even_fixed_caps_and_keepalive():
 
 def test_ximagesrc_source_is_used_as_given():
     video = VideoSpec(x11.window_source(77), 640, 480, 2, "nvh264enc")
-    argv = build_pipeline(mic="m", system="s", output=OUT, video=video)
+    argv = build_pipeline(audio=AUDIO, output=OUT, video=video)
     assert argv[argv.index("ximagesrc") : argv.index("ximagesrc") + 4] == [
         "ximagesrc",
         "xid=77",
@@ -81,9 +97,41 @@ def _stream(kind, title=None):
 
 def test_map_audio_streams_counts_only_audio_streams():
     probe = {"streams": [_stream("video"), _stream("audio", "system"), _stream("audio", "mic")]}
-    assert recorder.map_audio_streams(probe) == {"mic": 1, "system": 0}
+    assert recorder.map_audio_streams(probe, ["mic", "system"]) == {"mic": 1, "system": 0}
 
 
 def test_map_audio_streams_missing_track():
     with pytest.raises(RuntimeError, match="system"):
-        recorder.map_audio_streams({"streams": [_stream("audio", "mic")]})
+        recorder.map_audio_streams({"streams": [_stream("audio", "mic")]}, ["mic", "system"])
+
+
+def test_map_audio_streams_room_only():
+    assert recorder.map_audio_streams({"streams": [_stream("audio", "room")]}, ["room"]) == {"room": 0}
+
+
+LEVEL = (
+    'Got message #48 from element "level_mic" (element): level, endtime=(guint64)500528687, '
+    "timestamp=(guint64)528687, duration=(guint64)500000000, rms=(GValueArray)< -44.5 >, "
+    "peak=(GValueArray)< -20.25 >, decay=(GValueArray)< -20.25 >;"
+)
+
+
+def test_parse_level():
+    assert recorder.parse_level(LEVEL) == ("mic", -44.5, -20.25)
+    assert recorder.parse_level(LEVEL.replace("< -44.5 >", "< -inf >"))[1] == float("-inf")
+    assert recorder.parse_level('Got message #12 from element "level_mic" (state-changed): x') is None
+
+
+def test_health_warns_once_per_burst_of_mic_dropouts():
+    events = []
+    health = recorder.Health(events.append, mic_role="mic")
+    for i in range(10):
+        health.level("system", -700.0, -350.0, now=i * 0.5)  # a silent call is not a dropout
+    assert health.dropout_seconds == 0
+    for i in range(10):
+        health.level("mic", -700.0, -350.0, now=i * 0.5)
+    warnings = [e for e in events if e["event"] == "warning"]
+    assert len(warnings) == 1 and warnings[0]["kind"] == "mic-dropout"
+    assert health.dropout_seconds == 5.0
+    health.level("mic", -30.0, -10.0, now=6.0)
+    assert health.dropout_seconds == 5.0

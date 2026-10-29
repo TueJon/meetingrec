@@ -59,6 +59,9 @@ class MeetingMeta:
     tracks: list[TrackMeta] = field(default_factory=list)
     video: VideoMeta | None = None
     recorder_version: str = ""
+    mode: str = "call"  # "call": mic + remote audio; "room": one mic for everyone present
+    app: str = ""  # the application whose audio is the system track; "" = the whole system mix
+    mic_dropout_seconds: float | None = None
 
     @property
     def started(self) -> dt.datetime:

@@ -1,29 +1,48 @@
-"""Record mic + system audio (+ optional screen) into one Matroska file with GStreamer.
+"""Record mic + system (or one app's) audio (+ optional screen) into one Matroska file with GStreamer.
 
 One `gst-launch-1.0` process owns every track, so all of them share one clock and
-start at the same instant: that is what keeps audio and video in sync.
+start at the same instant: that is what keeps audio and video in sync. `audiorate`
+turns capture dropouts into silence instead of holes, so a stalled mic cannot shift
+the timeline, and `level` reports each track's loudness for live meters and the
+dropout check.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+import math
+import re
 import signal
 import subprocess
 import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
+import threading
+import time
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import __version__
 from ..config import Config
 from ..session import Session, TrackMeta, VideoMeta
-from . import x11
+from . import apps, x11
 from .portal import ScreenCastCancelled, restore_token_path, screencast
 
-AUDIO_ROLES = ("mic", "system")
+AUDIO_ROLES = ("mic", "system", "room")
 FINALIZE_TIMEOUT = 30
+# pulsesrc ring buffer and the queue behind it: a loaded laptop stalls the internal mic
+# for up to ~1.4 s, which the default 200 ms buffer turns into lost audio.
+PULSE_BUFFER_US = 2_000_000
+PULSE_LATENCY_US = 20_000
+QUEUE_NS = 10_000_000_000
+LEVEL_INTERVAL_NS = 500_000_000
+# A real microphone never delivers digital zero; a block this quiet is a dropout
+# that audiorate filled (or a hardware-muted mic).
+DROPOUT_DB = -150.0
+DROPOUT_WARN_SECONDS = 2.0
+DROPOUT_WINDOW_SECONDS = 10.0
+WARN_EVERY_SECONDS = 30.0
 MIN_FILE_BYTES = 1024
 KEYFRAME_SECONDS = 10
 VIDEO_BITRATE_KBPS = 400
@@ -55,14 +74,17 @@ def resolve_source(
     return name
 
 
-def resolve_sources(cfg: Config, mic: str | None, system: str | None) -> tuple[str, str]:
-    available = list_sources()
-    default_mic = _pactl("get-default-source").strip()
+def resolve_mic(cfg: Config, mic: str | None) -> str:
+    return resolve_source(mic, cfg.capture.mic, _pactl("get-default-source").strip(), list_sources(), "mic")
+
+
+def resolve_system(cfg: Config, system: str | None) -> str:
     default_monitor = _pactl("get-default-sink").strip() + ".monitor"
-    return (
-        resolve_source(mic, cfg.capture.mic, default_mic, available, "mic"),
-        resolve_source(system, cfg.capture.system, default_monitor, available, "system"),
-    )
+    return resolve_source(system, cfg.capture.system, default_monitor, list_sources(), "system")
+
+
+def resolve_sources(cfg: Config, mic: str | None, system: str | None) -> tuple[str, str]:
+    return resolve_mic(cfg, mic), resolve_system(cfg, system)
 
 
 # ---- pipeline ---------------------------------------------------------------
@@ -122,14 +144,25 @@ def _audio_branch(source: str, role: str) -> list[str]:
         "pulsesrc",
         f"device={source}",
         "do-timestamp=true",
+        f"buffer-time={PULSE_BUFFER_US}",
+        f"latency-time={PULSE_LATENCY_US}",
         "!",
         "queue",
+        f"max-size-time={QUEUE_NS}",
+        "max-size-buffers=0",
+        "max-size-bytes=0",
         "!",
         "audioconvert",
         "!",
         "audioresample",
         "!",
         "audio/x-raw,rate=48000,channels=1",
+        "!",
+        "audiorate",
+        "!",
+        "level",
+        f"name=level_{role}",
+        f"interval={LEVEL_INTERVAL_NS}",
         "!",
         "flacenc",
         "!",
@@ -168,13 +201,14 @@ def _video_branch(video: VideoSpec) -> list[str]:
 
 def build_pipeline(
     *,
-    mic: str,
-    system: str,
+    audio: list[tuple[str, str]],
     output: Path,
     video: VideoSpec | None = None,
 ) -> list[str]:
-    argv = ["gst-launch-1.0", "-q", "-e", "matroskamux", "name=mux", "!", "filesink", f"location={output}"]
-    argv += _audio_branch(mic, "mic") + _audio_branch(system, "system")
+    """`audio` is (role, pulse source) per track, in stream order. `-m` prints the level messages."""
+    argv = ["gst-launch-1.0", "-m", "-e", "matroskamux", "name=mux", "!", "filesink", f"location={output}"]
+    for role, source in audio:
+        argv += _audio_branch(source, role)
     if video:
         argv += _video_branch(video)
     return argv
@@ -183,17 +217,17 @@ def build_pipeline(
 # ---- stream mapping -----------------------------------------------------------
 
 
-def map_audio_streams(probe: dict) -> dict[str, int]:
+def map_audio_streams(probe: dict, roles: list[str]) -> dict[str, int]:
     """Role -> 0-based index among the audio streams, from ffprobe's title tags."""
     audio = [s for s in probe.get("streams", []) if s.get("codec_type") == "audio"]
     # Matroska tags come back upper-cased ("TITLE") from ffprobe.
     mapping = {
         {k.lower(): v for k, v in s.get("tags", {}).items()}.get("title"): i for i, s in enumerate(audio)
     }
-    missing = [r for r in AUDIO_ROLES if r not in mapping]
+    missing = [r for r in roles if r not in mapping]
     if missing:
         raise RuntimeError(f"recording lacks audio track(s): {', '.join(missing)}")
-    return {r: mapping[r] for r in AUDIO_ROLES}
+    return {r: mapping[r] for r in roles}
 
 
 def probe_file(path: Path) -> dict:
@@ -213,6 +247,65 @@ def probe_file(path: Path) -> dict:
     return json.loads(out)
 
 
+# ---- live levels and capture health -------------------------------------------
+
+Emit = Callable[[dict], None]
+
+_LEVEL_LINE = re.compile(
+    r'element "level_(\w+)" \(element\): level, '
+    r".*?rms=\(GValueArray\)< ([^>]+) >, peak=\(GValueArray\)< ([^>]+) >"
+)
+
+
+def parse_level(line: str) -> tuple[str, float, float] | None:
+    """(role, rms dB, peak dB) from one `gst-launch -m` level message line."""
+    match = _LEVEL_LINE.search(line)
+    if not match:
+        return None
+    role, rms, peak = match.groups()
+    return role, float(rms.split(",")[0]), float(peak.split(",")[0])
+
+
+@dataclass
+class Health:
+    """Counts dropout seconds on the microphone track and warns while it happens."""
+
+    emit: Emit
+    mic_role: str
+    dropout_seconds: float = 0.0
+    _recent: list[float] = field(default_factory=list)
+    _last_warning: float = -math.inf
+
+    def level(self, role: str, rms: float, peak: float, now: float) -> None:
+        self.emit({"event": "level", "role": role, "rms": round(rms, 1), "peak": round(peak, 1)})
+        if role != self.mic_role or rms > DROPOUT_DB:
+            return
+        block = LEVEL_INTERVAL_NS / 1e9
+        self.dropout_seconds += block
+        self._recent = [t for t in self._recent if now - t < DROPOUT_WINDOW_SECONDS] + [now]
+        if (
+            len(self._recent) * block >= DROPOUT_WARN_SECONDS
+            and now - self._last_warning >= WARN_EVERY_SECONDS
+        ):
+            self._last_warning = now
+            self.emit(
+                {
+                    "event": "warning",
+                    "kind": "mic-dropout",
+                    "message": "The microphone is delivering no audio (muted, or dropping under load).",
+                }
+            )
+
+
+def print_event(event: dict) -> None:
+    if event["event"] == "warning":
+        print(f"warning: {event['message']}", file=sys.stderr, flush=True)
+
+
+def json_event(event: dict) -> None:
+    print(json.dumps(event), flush=True)
+
+
 # ---- process control ----------------------------------------------------------
 
 
@@ -220,11 +313,28 @@ class _Child:
     """gst-launch in its own session, so the terminal's Ctrl+C reaches only us and
     the child gets exactly one SIGINT (which `-e` turns into EOS)."""
 
-    def __init__(self, argv: list[str], fds: tuple[int, ...]) -> None:
-        self.proc = subprocess.Popen(argv, pass_fds=fds, start_new_session=True)
+    def __init__(self, argv: list[str], fds: tuple[int, ...], health: Health, log: Path) -> None:
+        self.proc = subprocess.Popen(
+            argv, pass_fds=fds, start_new_session=True, stdout=subprocess.PIPE, text=True, bufsize=1
+        )
+        self._reader = threading.Thread(target=self._read, args=(health, log), daemon=True)
+        self._reader.start()
         self._stopped = False
-        for sig in (signal.SIGTERM, signal.SIGHUP):
-            signal.signal(sig, lambda *_: self.stop())
+        self._previous = {
+            sig: signal.signal(sig, lambda *_: self.stop()) for sig in (signal.SIGTERM, signal.SIGHUP)
+        }
+        # A parent that started us in the background (a GUI, `cmd &` in a script) may have left
+        # SIGINT ignored, and Ctrl+C or the GUI's Stop would then never reach us.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    def _read(self, health: Health, log: Path) -> None:
+        with log.open("w") as fh:
+            for line in self.proc.stdout:
+                level = parse_level(line)
+                if level:
+                    health.level(*level, now=time.monotonic())
+                else:
+                    fh.write(line)
 
     def stop(self) -> None:
         if not self._stopped and self.proc.poll() is None:
@@ -236,14 +346,21 @@ class _Child:
             self.proc.wait()
         except KeyboardInterrupt:
             self.stop()
-        return self._finalize()
+        try:
+            return self._finalize()
+        finally:
+            # Processing follows; there SIGTERM must end the process again, not a finished child.
+            for sig, handler in self._previous.items():
+                signal.signal(sig, handler)
 
     def _finalize(self) -> int:
         if self._stopped:
             print("Stopping, finalizing the file ...", flush=True)
         while True:
             try:
-                return self.proc.wait(timeout=FINALIZE_TIMEOUT)
+                code = self.proc.wait(timeout=FINALIZE_TIMEOUT)
+                self._reader.join(timeout=5)
+                return code
             except subprocess.TimeoutExpired:
                 print(
                     f"warning: recorder did not finish within {FINALIZE_TIMEOUT} s, killing it",
@@ -272,10 +389,12 @@ def pipewire_source(fd: int, node_id: int, fps: int) -> list[str]:
 
 
 @contextmanager
-def _screen_source(screen: str, fps: int) -> Iterator[tuple[list[str], int, int, str, tuple[int, ...]]]:
+def _screen_source(
+    screen: str, fps: int, window_id: int | None, monitor: str | None
+) -> Iterator[tuple[list[str], int, int, str, tuple[int, ...]]]:
     """(gst source elements, width, height, source type, fds to pass to gst-launch)."""
     if x11.is_x11_session():
-        picked = x11.capture(screen)
+        picked = x11.capture(screen, window_id=window_id, monitor=monitor)
         yield picked.source, picked.width, picked.height, picked.source_type, ()
         return
     with screencast(screen, restore_token_path()) as sc:
@@ -288,49 +407,112 @@ def _screen_source(screen: str, fps: int) -> Iterator[tuple[list[str], int, int,
         )
 
 
-def record(session: Session, cfg: Config, *, screen: str | None, mic: str | None, system: str | None) -> None:
-    mic_src, system_src = resolve_sources(cfg, mic, system)
+def record(
+    session: Session,
+    cfg: Config,
+    *,
+    screen: str | None,
+    mic: str | None,
+    system: str | None,
+    app: str | None = None,
+    room: bool = False,
+    window_id: int | None = None,
+    monitor: str | None = None,
+    emit: Emit = print_event,
+) -> None:
+    """Room mode records the microphone alone; `app` records one application instead of the system mix."""
+    if room and (app or system):
+        raise RuntimeError("room mode records the microphone only; drop --app/--system")
+    if app and system:
+        raise RuntimeError("--app and --system are alternatives")
     output = session.path("recording.mkv" if screen else "recording.mka")
     session.meta.recorder_version = __version__
-    session.meta.tracks = [
-        TrackMeta(role=role, file=output.name, stream=i, source=src)
-        for i, (role, src) in enumerate(zip(AUDIO_ROLES, (mic_src, system_src), strict=True))
-    ]
-    print(f"mic:    {mic_src}\nsystem: {system_src}")
+    session.meta.mode = "room" if room else "call"
+    mic_src = resolve_mic(cfg, mic)
+    if _pactl("get-source-mute", mic_src).strip().endswith("yes"):
+        emit({"event": "warning", "kind": "mic-muted", "message": "The microphone is muted."})
 
-    if not screen:
-        print(f"screen: off\nfile:   {output}")
-        _capture(session, build_pipeline(mic=mic_src, system=system_src, output=output), output, ())
-        return
+    with ExitStack() as stack:
+        audio = [("room" if room else "mic", mic_src)]
+        if app:
+            selector = apps.AppSelector.parse(app)
+            bus = stack.enter_context(apps.tap(selector))
+            session.meta.app = selector.label()
+            audio.append(("system", bus.source))
+            print(f"app:    {selector.label()} (only its audio is recorded)")
+        elif not room:
+            audio.append(("system", resolve_system(cfg, system)))
+            others = [s.app or s.binary for s in apps.playing_streams()]
+            if others:
+                emit(
+                    {
+                        "event": "warning",
+                        "kind": "other-audio",
+                        "message": "Everything the laptop plays is recorded, now also: "
+                        + ", ".join(sorted(set(others))),
+                    }
+                )
+        session.meta.tracks = [
+            TrackMeta(role=role, file=output.name, stream=i, source=src)
+            for i, (role, src) in enumerate(audio)
+        ]
+        for role, src in audio:
+            print(f"{role + ':':8}{src}")
 
-    encoder = resolve_encoder(cfg.capture.video_encoder)
-    if screen == "monitor":
-        print("Privacy: everything shown on the selected monitor is recorded, including notifications.")
-    try:
-        with _screen_source(screen, cfg.capture.video_fps) as (source, width, height, source_type, fds):
-            video = VideoSpec(source, width, height, cfg.capture.video_fps, encoder)
-            session.meta.video = VideoMeta(file=output.name, source_type=source_type, fps=video.fps)
-            print(f"screen: {source_type} {video.width}x{video.height} @ {video.fps} fps ({encoder})")
-            print(f"file:   {output}")
-            argv = build_pipeline(mic=mic_src, system=system_src, output=output, video=video)
-            _capture(session, argv, output, fds)
-    except ScreenCastCancelled:
-        session.dir.rmdir()  # nothing was recorded
-        raise
+        if not screen:
+            print(f"screen: off\nfile:   {output}")
+            _capture(session, build_pipeline(audio=audio, output=output), output, (), emit)
+            return
+
+        encoder = resolve_encoder(cfg.capture.video_encoder)
+        if screen == "monitor":
+            print("Privacy: everything shown on the selected monitor is recorded, including notifications.")
+        try:
+            with _screen_source(screen, cfg.capture.video_fps, window_id, monitor) as (
+                source,
+                width,
+                height,
+                source_type,
+                fds,
+            ):
+                video = VideoSpec(source, width, height, cfg.capture.video_fps, encoder)
+                session.meta.video = VideoMeta(file=output.name, source_type=source_type, fps=video.fps)
+                print(f"screen: {source_type} {video.width}x{video.height} @ {video.fps} fps ({encoder})")
+                print(f"file:   {output}")
+                _capture(session, build_pipeline(audio=audio, output=output, video=video), output, fds, emit)
+        except ScreenCastCancelled:
+            session.dir.rmdir()  # nothing was recorded
+            raise
 
 
-def _capture(session: Session, argv: list[str], output: Path, fds: tuple[int, ...]) -> None:
+def _capture(session: Session, argv: list[str], output: Path, fds: tuple[int, ...], emit: Emit) -> None:
     session.meta.started_at = _now()
     session.save()  # a crash still leaves usable metadata
+    roles = [t.role for t in session.meta.tracks]
+    health = Health(emit, mic_role=roles[0])
+    child = _Child(argv, fds, health, session.work_dir / "capture.log")
+    emit({"event": "recording", "dir": str(session.dir), "tracks": roles, "video": bool(session.meta.video)})
     print("Recording. Ctrl+C to stop.", flush=True)
-    code = _Child(argv, fds).run()
+    code = child.run()
     session.meta.ended_at = _now()
+    session.meta.mic_dropout_seconds = round(health.dropout_seconds, 1)
     session.save()
     if code != 0:
-        raise RuntimeError(f"gst-launch-1.0 exited with status {code}")
+        raise RuntimeError(
+            f"gst-launch-1.0 exited with status {code} (log: {session.work_dir / 'capture.log'})"
+        )
     if not output.exists() or output.stat().st_size < MIN_FILE_BYTES:
         raise RuntimeError(f"{output} is missing or empty")
-    mapping = map_audio_streams(probe_file(output))
+    mapping = map_audio_streams(probe_file(output), roles)
     for track in session.meta.tracks:
         track.stream = mapping[track.role]
     session.save()
+    if health.dropout_seconds >= DROPOUT_WARN_SECONDS:
+        emit(
+            {
+                "event": "warning",
+                "kind": "mic-dropout-total",
+                "message": f"The microphone delivered no audio for {health.dropout_seconds:.0f} s "
+                "(muted or dropping; kept as silence).",
+            }
+        )

@@ -24,6 +24,10 @@ MODEL_ALIASES = {
 # A mic segment this similar to the system audio at the same moment is loudspeaker bleed.
 ECHO_SIMILARITY = 0.6
 ECHO_WINDOW = 1.5
+# A room mic hears everyone far-field; Silero VAD drops most of that speech. On 5 min of a
+# 2026-10-29 in-person meeting: 81 words with VAD, 149 with a 0.2 threshold, 723 without it.
+# Without VAD, Whisper's own guard skips silences it would otherwise fill with invented text.
+ROOM_OPTIONS = {"vad_filter": False, "hallucination_silence_threshold": 2.0}
 
 _CUDA_LIBS = (("cublas", "libcublas.so.12"),)
 
@@ -103,6 +107,8 @@ def decode_track(
         "condition_on_previous_text": False,
         "word_timestamps": True,
     }
+    if role == "room":
+        options.update(ROOM_OPTIONS)
     if cfg.glossary:
         options["hotwords"] = ", ".join(cfg.glossary)
     try:

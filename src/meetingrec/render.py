@@ -36,7 +36,7 @@ def _cue_ts(seconds: float, sep: str) -> str:
 
 def speaker_name(transcript: Transcript, seg: Segment) -> str:
     if seg.speaker is None:
-        return "Remote" if seg.track == "system" else "?"
+        return {"system": "Remote", "room": "Room"}.get(seg.track, "?")
     return transcript.display_name(seg.speaker)
 
 

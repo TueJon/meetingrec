@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -106,24 +107,36 @@ def _run(argv: list[str], timeout: float | None = 60) -> str:
         raise RuntimeError(f"{' '.join(argv)} failed: {exc.stderr.strip()}") from exc
 
 
-def select_window() -> X11Capture:
-    print("Click the window to record ...", flush=True)
-    try:
-        window_id = int(_run(["xdotool", "selectwindow"], timeout=None).strip())
-    except RuntimeError as exc:
-        raise ScreenCastCancelled(str(exc)) from None
+def select_window(window_id: int | None = None) -> X11Capture:
+    if window_id is None:
+        print("Click the window to record ...", flush=True)
+        try:
+            window_id = int(_run(["xdotool", "selectwindow"], timeout=None).strip())
+        except RuntimeError as exc:
+            raise ScreenCastCancelled(str(exc)) from None
     width, height = parse_geometry(_run(["xdotool", "getwindowgeometry", "--shell", str(window_id)]))
     return X11Capture(window_source(window_id), width, height, "window")
 
 
-def select_monitor() -> X11Capture:
-    monitors = parse_monitors(_run(["xrandr", "--listactivemonitors"]))
+def list_monitors() -> list[Monitor]:
+    return parse_monitors(_run(["xrandr", "--listactivemonitors"]))
+
+
+def select_monitor(name: str | None = None) -> X11Capture:
+    monitors = list_monitors()
+    if name:
+        monitor = next((m for m in monitors if m.name == name), None)
+        if monitor is None:
+            raise RuntimeError(f"monitor {name!r} is not active ({', '.join(m.name for m in monitors)})")
+        return X11Capture(monitor_source(monitor), monitor.width, monitor.height, "monitor")
     path = monitor_choice_path()
     remembered = path.read_text().strip() if path.exists() else None
     answer = ""
     if len(monitors) > 1 and remembered not in {m.name for m in monitors}:
         for i, m in enumerate(monitors):
             print(f"  {i}: {m.name} {m.width}x{m.height}+{m.x}+{m.y}")
+        if not sys.stdin.isatty():
+            raise RuntimeError("several monitors and no terminal to ask: pass --monitor NAME")
         answer = input("Monitor to record: ").strip()
     monitor = pick_monitor(monitors, remembered, answer)
     if remembered == monitor.name:
@@ -135,5 +148,5 @@ def select_monitor() -> X11Capture:
     return X11Capture(monitor_source(monitor), monitor.width, monitor.height, "monitor")
 
 
-def capture(source: Source) -> X11Capture:
-    return select_window() if source == "window" else select_monitor()
+def capture(source: Source, *, window_id: int | None = None, monitor: str | None = None) -> X11Capture:
+    return select_window(window_id) if source == "window" else select_monitor(monitor)

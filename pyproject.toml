@@ -1,6 +1,6 @@
 [project]
 name = "meetingrec"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local meeting recorder for Linux: synced mic, system audio and screen capture, Whisper transcription, speaker diarization and naming, Claude-written minutes"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
