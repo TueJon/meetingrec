@@ -9,6 +9,8 @@ authors = [
     { name = "Jonas Tüchler" },
 ]
 dependencies = [
+    # faster-whisper 1.2.1 calls av.open(metadata_errors=...), which PyAV 19 removed.
+    "av>=17,<19",
     "click>=8.1.0",
     "faster-whisper>=1.2.1",
     "jeepney>=0.9.0",
