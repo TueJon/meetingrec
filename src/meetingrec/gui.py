@@ -25,6 +25,7 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent))  # run as a script under `python -I`
 from gui_model import (  # noqa: E402
     METER_FLOOR_DB,
+    agent_prompt,
     call_candidates,
     db_fraction,
     entry_title,
@@ -183,7 +184,7 @@ class Window(Adw.ApplicationWindow):
         heading.add_css_class("title-1")
         intro = Gtk.Label(
             label="Records your microphone, the call and optionally a window, "
-            "then writes a transcript and minutes on this machine.",
+            "then writes a transcript (locally or with Gemini in the cloud) and minutes.",
             wrap=True,
             max_width_chars=60,
             justify=Gtk.Justification.CENTER,
@@ -499,6 +500,8 @@ class Window(Adw.ApplicationWindow):
         log_scroller = Gtk.ScrolledWindow(min_content_height=160, child=self.log)
         self.log_expander = Gtk.Expander(label="Details", child=log_scroller)
         self.done_box = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER, visible=False)
+        self.copy_button = pill("Copy for agent", None, self._copy_for_agent)
+        self.copy_button.set_visible(False)
         self.new_button = pill("New recording", "flat", self._home)
         self.new_button.set_visible(False)
         body = column(
@@ -510,6 +513,7 @@ class Window(Adw.ApplicationWindow):
             self.stop_button,
             self.spinner,
             self.done_box,
+            self.copy_button,
             self.new_button,
             self.log_expander,
         )
@@ -599,12 +603,17 @@ class Window(Adw.ApplicationWindow):
                     self.done_box.append(pill(label, style, lambda p=folder / name: self._open(p)))
             self.done_box.append(pill("Folder", None, lambda: self._open(folder)))
         self.done_box.set_visible(bool(self.saved_dir))
+        self.copy_button.set_visible(bool(self.saved_dir))
         self.new_button.set_visible(True)
         self.nav.find_page("recording").set_can_pop(True)
         return False
 
     def _home(self) -> None:
         self.nav.pop_to_tag("home")
+
+    def _copy_for_agent(self) -> None:
+        self.get_clipboard().set(agent_prompt(self.setup.title, Path(self.saved_dir)))
+        self.toast("Prompt copied: paste it into your agent")
 
     def _open(self, path) -> None:
         Gio.AppInfo.launch_default_for_uri(Path(path).as_uri(), None)

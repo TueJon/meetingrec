@@ -96,3 +96,13 @@ def test_argv_with_cloud_transcription_drops_fast(monkeypatch):
     setup = Setup(title="Standup", fast=True, asr="gemini")
     assert setup.argv() == ["meetingrec", "full", "Standup", "--events", "--asr", "gemini"]
     assert setup.describe().endswith("(Gemini cloud)")
+
+
+def test_agent_prompt_lists_only_existing_files(tmp_path):
+    (tmp_path / "summary.md").write_text("x")
+    (tmp_path / "transcript.md").write_text("x")
+    prompt = gui_model.agent_prompt("AI catchup", tmp_path)
+    assert prompt.startswith(f"Meeting “AI catchup”, recorded in {tmp_path}:")
+    assert f"- {tmp_path / 'summary.md'}: the minutes" in prompt
+    assert f"- {tmp_path / 'transcript.md'}: the full transcript" in prompt
+    assert "notes.md" not in prompt and "recording.mkv" not in prompt
