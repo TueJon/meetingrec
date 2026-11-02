@@ -73,6 +73,27 @@ class Setup:
         return f"{audio} · {screen} · {after}"
 
 
+AGENT_FILES = (
+    ("summary.md", "the minutes: decisions, action items, open questions"),
+    ("transcript.md", "the full transcript with speakers and timestamps, the source of truth"),
+    ("notes.md", "my own notes, authoritative on names, owners and dates"),
+    ("frames", "screen keyframes"),
+    ("recording.mkv", "the recording"),
+)
+
+
+def agent_prompt(title: str, folder: Path) -> str:
+    """A prompt to paste into a coding agent so it picks up this meeting from its files."""
+    files = [f"- {folder / name}: {what}" for name, what in AGENT_FILES if (folder / name).exists()]
+    return "\n".join(
+        [
+            f"Meeting “{title}”, recorded in {folder}:",
+            *files,
+            "Read summary.md first and check details in transcript.md.",
+        ]
+    )
+
+
 def short(title: str) -> str:
     """ "Microsoft Teams (PWA) - Chat | …" -> "Microsoft Teams (PWA)"."""
     return re.split(r" [-|·—] ", title, maxsplit=1)[0][:48]

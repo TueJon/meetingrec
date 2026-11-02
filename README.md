@@ -7,7 +7,8 @@ track with Whisper, tells the remote speakers apart, recognizes voices it has me
 before, and asks the Claude CLI for structured minutes. The tool checks those minutes
 against the transcript before writing them.
 
-German-first, works for any Whisper language. Everything except the summary runs locally.
+German-first, works for any Whisper language. Everything except the summary runs locally,
+unless you pick cloud transcription (Gemini 3.5 Transcribe on Google Cloud).
 
 ## What you get per meeting
 
@@ -41,7 +42,7 @@ German-first, works for any Whisper language. Everything except the summary runs
    timestamps, and your glossary as hotwords. A `--room` recording skips VAD, which
    drops far-field speech. The mic track is you. If the mic picks
    up words that were played over loudspeakers at the same moment, they are dropped.
-   With `--asr gemini` (or `engine = "gemini"`, or "Google Cloud" in the window),
+   With `--asr gemini` (or `engine = "gemini"`, or "Cloud (Gemini)" in the window),
    [Gemini 3.5 Transcribe](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-5-transcribe)
    on Vertex AI transcribes instead: the audio leaves the machine, signed in through your
    `gcloud` login, in 10-minute chunks cut at pauses and sent in parallel, with the glossary
@@ -102,7 +103,10 @@ one that still supports Pascal GPUs (GTX 10xx).
 `meetingrec gui` opens a window. **Quick start** records with your last setup;
 **Set up recording…** walks through meeting type (call or in the room), the call app,
 the microphone (with a live meter and mute check) and an optional window or monitor.
-While recording it shows levels and warnings, and afterwards opens the minutes. To get
+The last step picks local or cloud transcription. While recording it shows levels and
+warnings. Afterwards it opens the minutes, the transcript or the folder, and **Copy for
+agent** puts a prompt with the meeting's file paths on the clipboard, ready to paste into a
+coding agent. To get
 it in the app launcher: `cp meetingrec.desktop ~/.local/share/applications/`.
 
 ```bash
