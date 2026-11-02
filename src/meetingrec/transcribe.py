@@ -155,25 +155,35 @@ def drop_echo(mic: list[Segment], system: list[Segment]) -> list[Segment]:
     return kept
 
 
+def _report(role: str, duration: float, elapsed: float) -> None:
+    click.echo(
+        f"[asr] {role}: {duration:.0f}s audio in {elapsed:.0f}s "
+        f"(real-time factor {elapsed / max(duration, 1e-9):.2f})"
+    )
+
+
 def transcribe_session(session: Session, cfg: Config, *, fast: bool = False) -> Transcript:
-    model_id = resolve_model(cfg.asr.fast_model if fast else cfg.asr.model)
-    model = load_model(cfg, model_id)
     tracks = {t.role: session.track_audio(t.role) for t in session.meta.tracks}
     durations = {role: wav_duration(wav) for role, (wav, _) in tracks.items()}
 
-    language = cfg.language
-    if language == "auto":
-        language = detect_language(model, tracks[max(durations, key=durations.get)][0])
+    if cfg.asr.engine == "gemini":
+        from .cloud_asr import transcribe_tracks
 
-    by_role: dict[TrackRole, list[Segment]] = {}
-    for role, (wav, offset) in tracks.items():
+        model_id = cfg.asr.cloud_model
         started = time.monotonic()
-        by_role[role] = decode_track(model, wav, offset, role, language, cfg)
-        elapsed = time.monotonic() - started
-        click.echo(
-            f"[asr] {role}: {durations[role]:.0f}s audio in {elapsed:.0f}s "
-            f"(real-time factor {elapsed / max(durations[role], 1e-9):.2f})"
-        )
+        by_role, language = transcribe_tracks(tracks, cfg)
+        _report("+".join(tracks), sum(durations.values()), time.monotonic() - started)
+    else:
+        model_id = resolve_model(cfg.asr.fast_model if fast else cfg.asr.model)
+        model = load_model(cfg, model_id)
+        language = cfg.language
+        if language == "auto":
+            language = detect_language(model, tracks[max(durations, key=durations.get)][0])
+        by_role: dict[TrackRole, list[Segment]] = {}
+        for role, (wav, offset) in tracks.items():
+            started = time.monotonic()
+            by_role[role] = decode_track(model, wav, offset, role, language, cfg)
+            _report(role, durations[role], time.monotonic() - started)
 
     if "mic" in by_role and "system" in by_role:
         before = len(by_role["mic"])

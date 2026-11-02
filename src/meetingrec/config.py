@@ -31,6 +31,10 @@ class AsrConfig:
     device: str = "auto"  # auto | cuda | cpu
     compute_type: str = "auto"
     beam_size: int = 5
+    engine: str = "local"  # local (faster-whisper) | gemini (Google Cloud, via gcloud login)
+    cloud_model: str = "gemini-3.5-transcribe"
+    cloud_project: str = ""  # "" = the gcloud default project
+    cloud_location: str = "eu"  # eu | us | global | a region such as europe-west4
 
 
 @dataclass

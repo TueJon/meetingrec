@@ -170,6 +170,19 @@ def check_asr_model(cfg: Config) -> list[Result]:
     return results
 
 
+def check_cloud_asr(cfg: Config) -> list[Result]:
+    if cfg.asr.engine != "gemini":
+        return []
+    from .cloud_asr import _gcloud, project
+
+    try:
+        project_id = project(cfg)
+        _gcloud("auth", "print-access-token")
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        return [_fail(f"{cfg.asr.cloud_model} needs a gcloud login (`gcloud auth login`): {exc}")]
+    return [_ok(f"{cfg.asr.cloud_model} via project {project_id}, location {cfg.asr.cloud_location}")]
+
+
 def check_diarization(cfg: Config) -> list[Result]:
     if not cfg.diarization.enabled:
         return [_ok("diarization disabled in config")]
@@ -227,6 +240,7 @@ def run_doctor(cfg: Config) -> int:
         *check_ffmpeg(),
         check_cuda(),
         *check_asr_model(cfg),
+        *check_cloud_asr(cfg),
         *check_diarization(cfg),
         check_claude(),
         *check_config(cfg),

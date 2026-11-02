@@ -41,6 +41,11 @@ German-first, works for any Whisper language. Everything except the summary runs
    timestamps, and your glossary as hotwords. A `--room` recording skips VAD, which
    drops far-field speech. The mic track is you. If the mic picks
    up words that were played over loudspeakers at the same moment, they are dropped.
+   With `--asr gemini` (or `engine = "gemini"`, or "Google Cloud" in the window),
+   [Gemini 3.5 Transcribe](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-5-transcribe)
+   on Vertex AI transcribes instead: the audio leaves the machine, signed in through your
+   `gcloud` login, in 10-minute chunks cut at pauses and sent in parallel, with the glossary
+   as custom vocabulary. Diarization and naming still run locally.
 3. **Diarize**: [pyannote community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
    separates the remote speakers on the system track (or everyone on a `--room` track).
 4. **Identify**: each remote speaker's voice embedding is compared with the voiceprints
@@ -146,6 +151,9 @@ video_fps = 2
 model = "large-v3"                # alias or any faster-whisper model id / path
 fast_model = "large-v3-turbo"
 device = "auto"                   # auto | cuda | cpu
+engine = "local"                  # local | gemini (Google Cloud, needs `gcloud auth login`)
+cloud_project = ""                # "" = the gcloud default project
+cloud_location = "eu"             # eu | us | global | a region
 
 [diarization]
 enabled = true

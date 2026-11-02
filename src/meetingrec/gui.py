@@ -422,19 +422,33 @@ class Window(Adw.ApplicationWindow):
         group.add(title)
         group.add(Adw.ActionRow(title="Setup", subtitle=GLib.markup_escape_text(self.setup.describe())))
         after = Adw.PreferencesGroup(title="Afterwards")
-        process = Adw.SwitchRow(title="Transcribe and summarize", subtitle="Runs locally when you stop")
+        process = Adw.SwitchRow(title="Transcribe and summarize", subtitle="Runs when you stop")
         process.set_active(self.setup.process)
+        engines = ["local", "gemini"]
+        engine = Adw.ComboRow(
+            title="Transcription",
+            model=Gtk.StringList.new(["Local (Whisper)", "Cloud (Gemini)"]),
+        )
+        engine.set_selected(engines.index(self.setup.asr) if self.setup.asr in engines else 0)
         fast = Adw.SwitchRow(title="Faster, less accurate model")
         fast.set_active(self.setup.fast)
-        process.bind_property("active", fast, "sensitive", 0)
-        fast.set_sensitive(self.setup.process)
+
+        def sync(*_) -> None:
+            engine.set_sensitive(process.get_active())
+            fast.set_sensitive(process.get_active() and engine.get_selected() == 0)
+
+        process.connect("notify::active", sync)
+        engine.connect("notify::selected", sync)
+        sync()
         after.add(process)
+        after.add(engine)
         after.add(fast)
 
         def start() -> None:
             self.setup.title = title.get_text().strip() or "meeting"
             self.title_row.set_text(title.get_text().strip())
             self.setup.process, self.setup.fast = process.get_active(), fast.get_active()
+            self.setup.asr = engines[engine.get_selected()]
             self._start()
 
         return page(
