@@ -31,10 +31,13 @@ class Setup:
     monitor: str = ""
     process: bool = True
     fast: bool = False
+    asr: str = "local"  # local | gemini
 
     def argv(self) -> list[str]:
         argv = [*CLI, "full" if self.process else "record", self.title or "meeting", "--events"]
-        if self.process and self.fast:
+        if self.process and self.asr == "gemini":
+            argv += ["--asr", "gemini"]
+        elif self.process and self.fast:
             argv.append("--fast")
         if self.room:
             argv.append("--room")
@@ -65,6 +68,8 @@ class Setup:
             "monitor": f"monitor {self.monitor}",
         }[self.screen]
         after = "transcript and summary afterwards" if self.process else "recording only"
+        if self.process and self.asr == "gemini":
+            after += " (Gemini cloud)"
         return f"{audio} · {screen} · {after}"
 
 

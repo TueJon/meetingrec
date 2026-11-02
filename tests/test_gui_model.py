@@ -89,3 +89,10 @@ def test_refresh_turns_off_a_vanished_window_and_fixes_monitor_and_mic():
 def test_db_fraction_clamps():
     assert gui_model.db_fraction(-700) == 0 and gui_model.db_fraction(0) == 1
     assert gui_model.db_fraction(-30) == 0.5
+
+
+def test_argv_with_cloud_transcription_drops_fast(monkeypatch):
+    monkeypatch.setattr(gui_model, "CLI", ["meetingrec"])
+    setup = Setup(title="Standup", fast=True, asr="gemini")
+    assert setup.argv() == ["meetingrec", "full", "Standup", "--events", "--asr", "gemini"]
+    assert setup.describe().endswith("(Gemini cloud)")

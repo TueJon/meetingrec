@@ -94,9 +94,15 @@ def record(cfg, title, out_root, events, **options) -> None:
 @cli.command()
 @_capture_options
 @click.option("--fast", is_flag=True, help="Use the faster, less accurate ASR model.")
+@click.option(
+    "--asr",
+    type=click.Choice(["local", "gemini"]),
+    help="Speech recognition: local Whisper or Gemini Transcribe on Google Cloud (default: config).",
+)
 @click.pass_obj
-def full(cfg, title, out_root, events, fast, **options) -> None:
+def full(cfg, title, out_root, events, fast, asr, **options) -> None:
     """Record, then transcribe, diarize, and summarize."""
+    cfg.asr.engine = asr or cfg.asr.engine
     session = _record(cfg, title, out_root, events, **options)
     if events:
         click.echo(json.dumps({"event": "processing", "dir": str(session.dir)}))
@@ -144,6 +150,11 @@ def gui() -> None:
 @click.argument("meetings", nargs=-1, required=True, type=click.Path(exists=True, path_type=Path))
 @click.option("--fast", is_flag=True, help="Use the faster, less accurate ASR model.")
 @click.option(
+    "--asr",
+    type=click.Choice(["local", "gemini"]),
+    help="Speech recognition: local Whisper or Gemini Transcribe on Google Cloud (default: config).",
+)
+@click.option(
     "--summary-only",
     is_flag=True,
     help="Reuse transcript.json; only re-run naming, rendering, and the summary.",
@@ -152,8 +163,9 @@ def gui() -> None:
 @click.option("--no-diarize", is_flag=True)
 @click.option("--no-visual", is_flag=True, help="Do not send screen keyframes to the summarizer.")
 @click.pass_obj
-def process(cfg, meetings, fast, summary_only, no_summary, no_diarize, no_visual) -> None:
+def process(cfg, meetings, fast, asr, summary_only, no_summary, no_diarize, no_visual) -> None:
     """(Re)process recorded meeting directories, including 0.1 directories with audio.wav."""
+    cfg.asr.engine = asr or cfg.asr.engine
     failed = 0
     for m in meetings:
         session = Session.load(m)
