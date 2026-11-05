@@ -31,6 +31,7 @@ from gui_model import (  # noqa: E402
     entry_title,
     fetch_targets,
     load_setup,
+    mic_name,
     refresh_for_today,
     save_setup,
 )
@@ -504,9 +505,17 @@ class Window(Adw.ApplicationWindow):
         self.copy_button.set_visible(False)
         self.new_button = pill("New recording", "flat", self._home)
         self.new_button.set_visible(False)
+        mic = mic_name(self.setup.mic, self.targets.get("mics", []))
         body = column(
             self.banner,
             Gtk.Label(label=GLib.markup_escape_text(self.setup.title), css_classes=["title-3"]),
+            Gtk.Label(
+                label=f"{self.setup.describe()}\nMicrophone: {mic}",
+                wrap=True,
+                max_width_chars=60,
+                justify=Gtk.Justification.CENTER,
+                css_classes=["dim-label"],
+            ),
             self.clock,
             self.status,
             meter_box,
