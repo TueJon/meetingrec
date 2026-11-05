@@ -106,3 +106,14 @@ def test_agent_prompt_lists_only_existing_files(tmp_path):
     assert f"- {tmp_path / 'summary.md'}: the minutes" in prompt
     assert f"- {tmp_path / 'transcript.md'}: the full transcript" in prompt
     assert "notes.md" not in prompt and "recording.mkv" not in prompt
+
+
+def test_mic_name_resolves_the_default_and_unknown_sources():
+    mics = [
+        {"name": "usb", "description": "USB Mic", "default": False},
+        {"name": "bt", "description": "Headset", "default": True},
+    ]
+    assert gui_model.mic_name("", mics) == "Headset"
+    assert gui_model.mic_name("usb", mics) == "USB Mic"
+    assert gui_model.mic_name("gone", mics) == "gone"
+    assert gui_model.mic_name("", []) == "System default"

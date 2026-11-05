@@ -94,6 +94,11 @@ def agent_prompt(title: str, folder: Path) -> str:
     )
 
 
+def mic_name(mic: str, mics: list[dict]) -> str:
+    chosen = next((m for m in mics if (m["name"] == mic if mic else m["default"])), None)
+    return chosen["description"] if chosen else mic or "System default"
+
+
 def short(title: str) -> str:
     """ "Microsoft Teams (PWA) - Chat | …" -> "Microsoft Teams (PWA)"."""
     return re.split(r" [-|·—] ", title, maxsplit=1)[0][:48]
