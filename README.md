@@ -122,6 +122,20 @@ meetingrec process --summary-only <dir>  # re-run naming, rendering and the summ
 meetingrec process --fast <dir>          # large-v3-turbo instead of large-v3
 ```
 
+### Live hints (experimental)
+
+`--live` transcribes the call while it runs (`large-v3-turbo`, every 15 s) and lets a quick
+Claude model (`haiku` through your Claude CLI login) read the last minutes every 30 s. It
+looks things up read-only in a knowledge base you name (notes, a repo) and prints a hint
+only when it helps right now: an answer, something to mention, a question to ask, a
+contradiction with your notes or an open item. Transcript and hints land in `live/` in the
+meeting directory; `--events` emits them as `transcript` and `hint` events.
+
+```bash
+meetingrec full sync --app chrome --live --hints-in ~/notes   # hints from ~/notes
+meetingrec replay <dir> --speed 2 --hints-in ~/notes          # try it on a past meeting
+```
+
 Name a speaker once and they are recognized in later meetings:
 
 ```bash
@@ -172,6 +186,18 @@ model = ""                        # Claude CLI model alias; "" = CLI default
 effort = "medium"
 language = "auto"                 # auto | de | en
 max_keyframes = 12
+
+[live]
+asr_model = "large-v3-turbo"      # fast Whisper for the running transcript
+interval = 15                     # seconds between transcript chunks
+hint_interval = 30                # seconds between looks by the hint model
+window_minutes = 10               # transcript the hint model sees
+model = "haiku"                   # Claude CLI model alias
+effort = "low"
+workdir = ""                      # knowledge base to research in; "" = current directory
+tools = ["Read", "Grep", "Glob"]  # tools the hint model has (add "Bash" with care)
+allowed_tools = ["Read", "Grep", "Glob"]  # e.g. "Bash(bin/search:*)" for a search script
+notify = false                    # desktop notifications (visible when sharing the screen)
 ```
 
 List audio sources with `pactl list short sources`.
@@ -183,6 +209,8 @@ This tool records conversations. Tell participants and follow your local law.
 - Recordings, transcripts and summaries stay under `~/Recordings/meetings/`. The
   summary step sends the transcript, your notes and the selected keyframes to Claude
   through your own Claude CLI login.
+- `--live` sends the running transcript to Claude every `hint_interval` seconds, and
+  hints quote your knowledge base: keep the terminal off a shared screen.
 - `--screen window` asks for a window every meeting. `--screen monitor` remembers the
   monitor and records everything that appears on it, including notifications. On X11 the
   window is clicked and the monitor typed in the terminal; the monitor is remembered in

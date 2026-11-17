@@ -31,6 +31,9 @@ def _record(cfg, title: str, out_root: Path | None, events: bool, **options) -> 
     from .capture.portal import ScreenCastCancelled
     from .capture.recorder import json_event, print_event, record
 
+    hints_in = options.pop("hints_in")
+    if hints_in:
+        cfg.live.workdir = str(hints_in)
     emit = json_event if events else print_event
     session = Session.create(out_root or cfg.out_root, title, dt.datetime.now().astimezone())
     try:
@@ -77,6 +80,16 @@ def _capture_options(fn):
             click.option(
                 "--events", is_flag=True, help="Print JSON-lines events (levels, warnings) on stdout."
             ),
+            click.option(
+                "--live",
+                is_flag=True,
+                help="Transcribe while recording and let a quick model research hints (see [live] config).",
+            ),
+            click.option(
+                "--hints-in",
+                type=click.Path(exists=True, file_okay=False, path_type=Path),
+                help="Live mode: knowledge base the hint model researches in (default: config, else cwd).",
+            ),
         ]
     ):
         fn = option(fn)
@@ -110,6 +123,53 @@ def full(cfg, title, out_root, events, fast, asr, **options) -> None:
     if events:
         click.echo(json.dumps({"event": "done", "dir": str(session.dir)}))
     click.echo(f"\nDone: {session.dir}")
+
+
+@cli.command()
+@click.argument("meeting", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--speed", type=float, default=1.0, show_default=True, help="Replay speed (x real time).")
+@click.option(
+    "--hints-in",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Knowledge base the hint model researches in (default: config, else cwd).",
+)
+@click.option("--events", is_flag=True, help="Print JSON-lines events on stdout.")
+@click.pass_obj
+def replay(cfg, meeting, speed, hints_in, events) -> None:
+    """Try live mode on a recorded meeting: replay its audio and print transcript and hints."""
+    import tempfile
+    import threading
+
+    from . import live
+    from .capture.recorder import json_event, print_event
+
+    if hints_in:
+        cfg.live.workdir = str(hints_in)
+    session = Session.load(meeting)
+    roles = [t.role for t in session.meta.tracks]
+    for role in roles:
+        session.track_audio(role)
+    stop = threading.Event()
+    with tempfile.TemporaryDirectory(prefix="meetingrec-live-") as tmp:
+        directory = Path(tmp)
+        feeder = threading.Thread(target=live.replay, args=(session.dir, directory, roles, speed, stop))
+        feeder.start()
+        threading.Thread(target=lambda: (feeder.join(), stop.set()), daemon=True).start()
+        try:
+            live.run(
+                directory,
+                cfg,
+                title=session.meta.title,
+                roles=roles,
+                stop=stop,
+                emit=json_event if events else print_event,
+            )
+        except KeyboardInterrupt:
+            stop.set()
+        finally:
+            feeder.join()
+            hints = (directory / "hints.md").read_text() if (directory / "hints.md").exists() else ""
+    click.echo(f"\nHints:\n{hints or '(none)'}")
 
 
 @cli.command()

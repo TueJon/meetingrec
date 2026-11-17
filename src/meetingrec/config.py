@@ -63,6 +63,20 @@ class SummaryConfig:
 
 
 @dataclass
+class LiveConfig:
+    asr_model: str = "large-v3-turbo"  # fast Whisper for the running transcript
+    interval: float = 15.0  # seconds between transcript chunks
+    hint_interval: float = 30.0  # seconds between looks by the hint model
+    window_minutes: float = 10.0  # transcript the hint model sees
+    model: str = "haiku"  # Claude CLI model alias for hints
+    effort: str = "low"
+    workdir: str = ""  # knowledge base the hint model researches in; "" = current directory
+    tools: list[str] = field(default_factory=lambda: ["Read", "Grep", "Glob"])
+    allowed_tools: list[str] = field(default_factory=lambda: ["Read", "Grep", "Glob"])
+    notify: bool = False  # desktop notifications (visible when sharing the screen)
+
+
+@dataclass
 class Config:
     out_root: Path = field(default_factory=lambda: Path.home() / "Recordings" / "meetings")
     self_name: str = ""  # name for the local mic speaker; "" = "Ich"/"Me"
@@ -75,6 +89,7 @@ class Config:
     diarization: DiarizationConfig = field(default_factory=DiarizationConfig)
     speakers: SpeakersConfig = field(default_factory=SpeakersConfig)
     summary: SummaryConfig = field(default_factory=SummaryConfig)
+    live: LiveConfig = field(default_factory=LiveConfig)
     # Where this config was loaded from; set by load_config, not a config key.
     source: Path | None = field(default=None, metadata={"internal": True})
 
