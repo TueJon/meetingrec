@@ -117,3 +117,20 @@ def test_mic_name_resolves_the_default_and_unknown_sources():
     assert gui_model.mic_name("usb", mics) == "USB Mic"
     assert gui_model.mic_name("gone", mics) == "gone"
     assert gui_model.mic_name("", []) == "System default"
+
+
+def test_argv_with_live_hints(monkeypatch):
+    monkeypatch.setattr(gui_model, "CLI", ["meetingrec"])
+    assert Setup(process=False, live=True, hints_in="/kb").argv()[-3:] == ["--live", "--hints-in", "/kb"]
+    assert Setup(process=False, live=True).argv()[-1] == "--live"
+    assert "--live" not in Setup(hints_in="/kb").argv()
+
+
+def test_knowledge_bases_lists_existing_configured_folders(tmp_path):
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "repo").mkdir()
+    config = tmp_path / "config.toml"
+    folders = ", ".join(f'"{tmp_path}/{name}"' for name in ("repo", "gone", "notes"))
+    config.write_text(f'[live]\nworkdir = "{tmp_path}/notes"\nworkdirs = [{folders}]\n')
+    assert gui_model.knowledge_bases(config) == [f"{tmp_path}/repo", f"{tmp_path}/notes"]
+    assert gui_model.knowledge_bases(tmp_path / "missing.toml") == []

@@ -71,6 +71,7 @@ class LiveConfig:
     model: str = "haiku"  # Claude CLI model alias for hints
     effort: str = "low"
     workdir: str = ""  # knowledge base the hint model researches in; "" = current directory
+    workdirs: list[str] = field(default_factory=list)  # further knowledge bases the window offers
     tools: list[str] = field(default_factory=lambda: ["Read", "Grep", "Glob"])
     allowed_tools: list[str] = field(default_factory=lambda: ["Read", "Grep", "Glob"])
     notify: bool = False  # desktop notifications (visible when sharing the screen)

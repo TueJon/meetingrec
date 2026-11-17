@@ -20,7 +20,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, GObject, Gtk  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))  # run as a script under `python -I`
 from gui_model import (  # noqa: E402
@@ -30,6 +30,7 @@ from gui_model import (  # noqa: E402
     db_fraction,
     entry_title,
     fetch_targets,
+    knowledge_bases,
     load_setup,
     mic_name,
     refresh_for_today,
@@ -445,16 +446,38 @@ class Window(Adw.ApplicationWindow):
         after.add(process)
         after.add(engine)
         after.add(fast)
+        during = Adw.PreferencesGroup(title="During the meeting")
+        live = Adw.SwitchRow(
+            title="Live hints",
+            subtitle="Transcribes as you talk; a quick Claude model looks things up and suggests what to "
+            "ask or mention. Keep this window off a shared screen.",
+        )
+        live.set_active(self.setup.live)
+        during.add(live)
+        folders = knowledge_bases()
+        research = None
+        if folders:
+            research = Adw.ComboRow(
+                title="Research in", model=Gtk.StringList.new([Path(f).name for f in folders])
+            )
+            if self.setup.hints_in in folders:
+                research.set_selected(folders.index(self.setup.hints_in))
+            live.bind_property("active", research, "sensitive", GObject.BindingFlags.SYNC_CREATE)
+            during.add(research)
 
         def start() -> None:
             self.setup.title = title.get_text().strip() or "meeting"
             self.title_row.set_text(title.get_text().strip())
             self.setup.process, self.setup.fast = process.get_active(), fast.get_active()
             self.setup.asr = engines[engine.get_selected()]
+            self.setup.live = live.get_active()
+            self.setup.hints_in = folders[research.get_selected()] if research else ""
             self._start()
 
         return page(
-            "Ready", column(group, after, nav_buttons(self.nav.pop, "Start recording", start)), "ready"
+            "Ready",
+            column(group, after, during, nav_buttons(self.nav.pop, "Start recording", start)),
+            "ready",
         )
 
     # ---- recording
@@ -506,6 +529,18 @@ class Window(Adw.ApplicationWindow):
         self.new_button = pill("New recording", "flat", self._home)
         self.new_button.set_visible(False)
         mic = mic_name(self.setup.mic, self.targets.get("mics", []))
+        self.heard = Gtk.Label(
+            label="Listening …",
+            wrap=True,
+            max_width_chars=60,
+            css_classes=["dim-label"],
+            visible=self.setup.live,
+        )
+        self.hints = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
+        self.hints.set_placeholder(Gtk.Label(label="No hints yet", margin_top=12, margin_bottom=12))
+        hints_scroller = Gtk.ScrolledWindow(
+            min_content_height=220, child=self.hints, visible=self.setup.live, vexpand=True
+        )
         body = column(
             self.banner,
             Gtk.Label(label=GLib.markup_escape_text(self.setup.title), css_classes=["title-3"]),
@@ -519,6 +554,8 @@ class Window(Adw.ApplicationWindow):
             self.clock,
             self.status,
             meter_box,
+            self.heard,
+            hints_scroller,
             self.stop_button,
             self.spinner,
             self.done_box,
@@ -568,6 +605,15 @@ class Window(Adw.ApplicationWindow):
             self.warnings[event["kind"]] = event["message"]
             self.banner.set_title(GLib.markup_escape_text("\n".join(self.warnings.values())))
             self.banner.set_revealed(True)
+        elif kind == "transcript":
+            self.heard.set_text(f"{event['speaker']}: {event['text']}")
+        elif kind == "hint":
+            minutes, seconds = divmod(int(event["at"]), 60)
+            row = Adw.ActionRow(
+                title=GLib.markup_escape_text(f"{event['kind'].upper()} · {event['text']}"),
+                subtitle=GLib.markup_escape_text(f"{minutes}:{seconds:02d} · {event['source']}"),
+            )
+            self.hints.prepend(row)
         elif kind == "saved":
             self.saved_dir = event["dir"]
         elif kind == "processing":

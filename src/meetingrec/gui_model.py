@@ -9,10 +9,12 @@ import json
 import os
 import re
 import subprocess
+import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 CLI = json.loads(os.environ.get("MEETINGREC_CMD", '["meetingrec"]'))
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "meetingrec" / "config.toml"
 STATE = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "meetingrec" / "gui.json"
 METER_FLOOR_DB = -60.0
 
@@ -32,6 +34,8 @@ class Setup:
     process: bool = True
     fast: bool = False
     asr: str = "local"  # local | gemini
+    live: bool = False
+    hints_in: str = ""  # knowledge base for live hints; "" = config default
 
     def argv(self) -> list[str]:
         argv = [*CLI, "full" if self.process else "record", self.title or "meeting", "--events"]
@@ -51,6 +55,10 @@ class Setup:
                 argv += ["--window-id", str(self.window_id)]
             if self.screen == "monitor" and self.monitor:
                 argv += ["--monitor", self.monitor]
+        if self.live:
+            argv.append("--live")
+            if self.hints_in:
+                argv += ["--hints-in", self.hints_in]
         return argv
 
     def describe(self) -> str:
@@ -70,7 +78,8 @@ class Setup:
         after = "transcript and summary afterwards" if self.process else "recording only"
         if self.process and self.asr == "gemini":
             after += " (Gemini cloud)"
-        return f"{audio} · {screen} · {after}"
+        live = f" · live hints from {Path(self.hints_in).name or 'config'}" if self.live else ""
+        return f"{audio} · {screen}{live} · {after}"
 
 
 AGENT_FILES = (
@@ -92,6 +101,17 @@ def agent_prompt(title: str, folder: Path) -> str:
             "Read summary.md first and check details in transcript.md.",
         ]
     )
+
+
+def knowledge_bases(config: Path = CONFIG) -> list[str]:
+    """Folders the live hint model may research in: `[live] workdirs` and `workdir` from the config."""
+    try:
+        live = tomllib.loads(config.read_text()).get("live", {})
+    except (OSError, ValueError):
+        return []
+    folders = [*live.get("workdirs", []), *([live["workdir"]] if live.get("workdir") else [])]
+    found = [str(Path(f).expanduser()) for f in folders]
+    return [f for f in dict.fromkeys(found) if Path(f).is_dir()]
 
 
 def mic_name(mic: str, mics: list[dict]) -> str:
