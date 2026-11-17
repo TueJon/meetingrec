@@ -160,6 +160,9 @@ class Window(Adw.ApplicationWindow):
         self.preview: MicPreview | None = None
         self.connect("close-request", self._on_close)
         self.nav.add(self._home_page())
+        self.nav.connect(
+            "popped", lambda *_: self.nav.get_visible_page().get_tag() == "home" and self._refresh_home_live()
+        )
 
     # ---- data
 
@@ -199,6 +202,7 @@ class Window(Adw.ApplicationWindow):
             label=self.setup.describe(), wrap=True, max_width_chars=60, justify=Gtk.Justification.CENTER
         )
         self.quick_label.add_css_class("dim-label")
+        self.home_live = Adw.PreferencesGroup()
         folder = Gtk.Button(label="Open recordings folder", halign=Gtk.Align.CENTER)
         folder.add_css_class("flat")
         folder.connect("clicked", lambda *_: self._load_targets() and self._open(self.targets["out_root"]))
@@ -207,12 +211,51 @@ class Window(Adw.ApplicationWindow):
             heading,
             intro,
             group,
+            self.home_live,
             pill("Quick start", "suggested-action", self._quick_start),
             self.quick_label,
             pill("Set up recording…", None, self._wizard),
             folder,
         )
+        self.home_live_rows: list[Adw.PreferencesRow] = []
+        self._refresh_home_live()
         return page("Meeting recorder", body, "home")
+
+    def _refresh_home_live(self) -> None:
+        for row in self.home_live_rows:
+            self.home_live.remove(row)
+        self.home_live_rows = self._live_rows()
+        for row in self.home_live_rows:
+            self.home_live.add(row)
+
+    def _live_rows(self) -> list[Adw.PreferencesRow]:
+        """The live hints switch and its knowledge base, written straight into the setup."""
+        live = Adw.SwitchRow(
+            title="Live hints",
+            subtitle="Transcribes as you talk; a quick Claude model looks things up and suggests what to "
+            "ask or mention. Keep this window off a shared screen.",
+        )
+        live.set_active(self.setup.live)
+        rows: list[Adw.PreferencesRow] = [live]
+        folders = knowledge_bases()
+
+        def sync(*_) -> None:
+            self.setup.live = live.get_active()
+            if len(rows) > 1:
+                self.setup.hints_in = folders[rows[1].get_selected()]
+            self.quick_label.set_text(self.setup.describe())
+
+        if folders:
+            research = Adw.ComboRow(
+                title="Research in", model=Gtk.StringList.new([Path(f).name for f in folders])
+            )
+            if self.setup.hints_in in folders:
+                research.set_selected(folders.index(self.setup.hints_in))
+            live.bind_property("active", research, "sensitive", GObject.BindingFlags.SYNC_CREATE)
+            research.connect("notify::selected", sync)
+            rows.append(research)
+        live.connect("notify::active", sync)
+        return rows
 
     def _title(self) -> str:
         return self.title_row.get_text().strip() or "meeting"
@@ -447,31 +490,14 @@ class Window(Adw.ApplicationWindow):
         after.add(engine)
         after.add(fast)
         during = Adw.PreferencesGroup(title="During the meeting")
-        live = Adw.SwitchRow(
-            title="Live hints",
-            subtitle="Transcribes as you talk; a quick Claude model looks things up and suggests what to "
-            "ask or mention. Keep this window off a shared screen.",
-        )
-        live.set_active(self.setup.live)
-        during.add(live)
-        folders = knowledge_bases()
-        research = None
-        if folders:
-            research = Adw.ComboRow(
-                title="Research in", model=Gtk.StringList.new([Path(f).name for f in folders])
-            )
-            if self.setup.hints_in in folders:
-                research.set_selected(folders.index(self.setup.hints_in))
-            live.bind_property("active", research, "sensitive", GObject.BindingFlags.SYNC_CREATE)
-            during.add(research)
+        for row in self._live_rows():
+            during.add(row)
 
         def start() -> None:
             self.setup.title = title.get_text().strip() or "meeting"
             self.title_row.set_text(title.get_text().strip())
             self.setup.process, self.setup.fast = process.get_active(), fast.get_active()
             self.setup.asr = engines[engine.get_selected()]
-            self.setup.live = live.get_active()
-            self.setup.hints_in = folders[research.get_selected()] if research else ""
             self._start()
 
         return page(
