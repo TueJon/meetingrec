@@ -197,6 +197,16 @@ def test_look_shows_only_the_drafts_the_check_keeps():
     assert "- old plan" in h.prompt()
 
 
+def test_the_check_gets_the_lines_around_the_source(tmp_path):
+    (tmp_path / "a.md").write_text("\n".join(f"row {n}" for n in range(1, 40)))
+    assert live.excerpt("a.md:20 (Release scope)", tmp_path).splitlines()[0] == "   15: row 15"
+    assert "   30: row 30" in live.excerpt(f"{tmp_path}/a.md:20", tmp_path)
+    assert live.excerpt("missing.md:3", tmp_path) == live.excerpt("no line", tmp_path) == ""
+    h = Hinter(Config(), "call", "Me", workdir=tmp_path)
+    h.add([Line(0, "Remote", "hello")])
+    assert "   3: row 3" in h.verify_prompt(DRAFTS[:1])
+
+
 def test_look_shows_nothing_when_the_check_fails():
     claude = FakeClaude({"hints": DRAFTS, "record_fixes": []}, RuntimeError("overloaded"))
     h = Hinter(Config(), "call", "Me", workdir=None, runner=claude)

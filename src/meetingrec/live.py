@@ -50,6 +50,10 @@ CUE = re.compile(
     r"dienstag|mittwoch|donnerstag|freitag|frist|bis wann)\b",
     re.IGNORECASE,
 )
+SOURCE_LINE = re.compile(r"^(.+?):(\d+)")
+EXCERPT_LINES_BEFORE = 5
+EXCERPT_LINES_AFTER = 10
+EXCERPT_LINE_CHARS = 1500
 LOGGED_TOOL_INPUT = ("file_path", "pattern", "path", "glob", "offset", "limit")
 
 Emit = Callable[[dict], None]
@@ -165,7 +169,8 @@ right now ({today}). "{me}" in the transcript is {name}, "Remote" is everyone el
 transcript comes from fast speech recognition and has errors. A wrong or late hint costs
 more than a missing one. Your working directory is {name}'s knowledge base.
 
-Open the source of every draft and check it. keep is false when:
+Every draft comes with the lines around its source. Check it against them, and open
+files only when you need more, for example to look for a newer record. keep is false when:
 - the source does not say what the draft claims, or is about a different thing that only
   shares a word with the conversation
 - a newer record on the topic says something else
@@ -261,6 +266,7 @@ class Transcriber:
     tails: dict[str, Line] = field(default_factory=dict)
     detected: str = ""
     detected_until: float = 0.0
+    heard: float = 0.0
 
     def _language(self, now: float) -> str | None:
         if self.language != "auto":
@@ -283,6 +289,7 @@ class Transcriber:
                 fh.seek(offset)
                 raw = fh.read(size - offset)
             audio = np.frombuffer(raw, np.int16).astype(np.float32) / 32768
+            self.heard = max(self.heard, size / BYTES_PER_SECOND)
             self.tails.pop(role, None)
             if not self.speech(audio):
                 self.offsets[role] = offset + len(raw)
@@ -340,6 +347,23 @@ class Call:
 
     def log(self) -> dict:
         return {"seconds": self.seconds, "cost": round(self.cost, 4), "tools": self.tools}
+
+
+def excerpt(source: str, workdir: Path) -> str:
+    """The lines around a `path:line` source, so the check needs no lookup for them."""
+    match = SOURCE_LINE.match(source.strip())
+    if not match:
+        return ""
+    path = Path(match[1]).expanduser()
+    try:
+        rows = (path if path.is_absolute() else workdir / path).read_text(errors="replace").splitlines()
+    except OSError:
+        return ""
+    first = max(int(match[2]) - 1 - EXCERPT_LINES_BEFORE, 0)
+    return "\n".join(
+        f"   {number}: {row[:EXCERPT_LINE_CHARS]}"
+        for number, row in enumerate(rows[first : int(match[2]) + EXCERPT_LINES_AFTER], first + 1)
+    )
 
 
 def claude_command(
@@ -428,13 +452,15 @@ class Hinter:
     checking: list[str] = field(default_factory=list)
     tail: list[Line] = field(default_factory=list)
     tail_seen: str = ""
+    heard: float = 0.0
     seen: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def add(self, lines: list[Line], tail: list[Line] = ()) -> None:
+    def add(self, lines: list[Line], tail: list[Line] = (), heard: float = 0.0) -> None:
         with self.lock:
             self.lines += lines
             self.tail = list(tail)
+            self.heard = heard
 
     def _tail_text(self) -> str:
         return " ".join(line.text for line in self.tail)
@@ -480,7 +506,7 @@ class Hinter:
     def verify_prompt(self, drafts: list[dict]) -> str:
         rendered = [
             f"{i}. {d['kind'].upper()}: {d['text']}\n   source: {d['source']} ({d['source_date']})\n"
-            f"   quote: {d['quote']}"
+            f"   quote: {d['quote']}\n{excerpt(d['source'], self.workdir or Path.cwd())}"
             for i, d in enumerate(drafts)
         ]
         with self.lock:
@@ -493,9 +519,11 @@ class Hinter:
         with self.lock:
             prompt = self.prompt()
             at = (self.lines + self.tail)[-1].start
+            heard = self.heard
             self.seen, self.tail_seen = len(self.lines), self._tail_text()
         entry: dict = {
             "at": round(at, 1),
+            "heard": round(heard, 1),
             "time": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         try:
@@ -581,6 +609,7 @@ def run(
     """Transcribe and hint until `stop` is set, then transcribe what is left."""
     from .transcribe import load_model, resolve_model
 
+    began = time.monotonic()
     me = cfg.self_name or ("Ich" if cfg.language == "de" else "Me")
     speakers = {"mic": me, "system": "Remote", "room": "Room"}
     model = load_model(cfg, resolve_model(cfg.live.asr_model))
@@ -590,13 +619,12 @@ def run(
     workdir = Path(cfg.live.workdir).expanduser() if cfg.live.workdir else Path.cwd()
     hinter = Hinter(cfg, title, me, workdir)
     emit({"event": "live", "workdir": str(workdir), "model": cfg.live.model or "default"})
-    began = time.monotonic()
 
     writing = threading.Lock()
 
     def finish(drafts: list[dict], entry: dict, started: float) -> None:
         new = hinter.check(drafts, entry) if "error" not in entry else []
-        entry["lag"] = round(time.monotonic() - began - entry["at"], 1)
+        entry["lag"] = round(time.monotonic() - began - entry["heard"], 1)
         with writing:
             with (directory / "hint-log.jsonl").open("a") as log:
                 log.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -628,7 +656,7 @@ def run(
                 continue
             last = time.monotonic()
             drafts, fixes, entry = hinter.research()
-            entry["trigger"] = trigger
+            entry |= {"trigger": trigger, "transcript_behind": round(last - began - entry["heard"], 1)}
             if fixes:
                 with writing, (directory / "record-fixes.md").open("a") as fixes_md:
                     fixes_md.writelines(f"- {fix}\n" for fix in fixes)
@@ -653,7 +681,7 @@ def run(
                     }
                 )
             transcript.flush()
-            hinter.add(lines, transcriber.tail())
+            hinter.add(lines, transcriber.tail(), transcriber.heard)
             if stopping:
                 return
 

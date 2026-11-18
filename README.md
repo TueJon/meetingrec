@@ -136,7 +136,8 @@ the call. Everything lands in `live/` in the meeting directory:
 - `transcript.txt` and `hints.md`: the running transcript and the hints that were shown
   (`--events` emits them as `transcript` and `hint` events)
 - `record-fixes.md`: notes that disagree with each other or that the meeting made outdated
-- `hint-log.jsonl`: every look with its drafts, verdicts, lookups, seconds and cost
+- `hint-log.jsonl`: every look with its drafts, verdicts, lookups, seconds and cost; `lag`
+  is the time from the newest audio the look had read to its result
 - `review.md`: after `full`, a check of the hints against the final transcript: which
   were useful, late or wrong, and what the notes held that no hint brought up
 
