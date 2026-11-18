@@ -15,14 +15,27 @@ class Seg:
     text: str
 
 
-class FakeModel:
-    def __init__(self, segments):
-        self.segments = segments
-        self.seconds = []
+@dataclass
+class Info:
+    language: str
+    language_probability: float
 
-    def transcribe(self, audio, **_):
+
+class FakeModel:
+    def __init__(self, segments, info=None):
+        self.segments = segments
+        self.info = info
+        self.seconds = []
+        self.languages = []
+
+    def transcribe(self, audio, language=None, **_):
         self.seconds.append(len(audio) / live.RATE)
-        return iter(self.segments), None
+        self.languages.append(language)
+        return iter(self.segments), self.info
+
+
+def heard(audio):
+    return True
 
 
 def _pcm(path, seconds):
@@ -32,13 +45,36 @@ def _pcm(path, seconds):
 def test_transcriber_keeps_a_cut_last_segment_for_the_next_chunk(tmp_path):
     _pcm(tmp_path / "system.pcm", 10)
     model = FakeModel([Seg(1.0, 4.0, " Hallo zusammen."), Seg(8.0, 9.7, " und dann")])
-    t = Transcriber(model, tmp_path, ["system"], "de", {"system": "Remote"}, {"system": 0})
+    t = Transcriber(model, tmp_path, ["system"], "de", {"system": "Remote"}, {"system": 0}, speech=heard)
     assert t.tick() == [Line(1.0, "Remote", "Hallo zusammen.")]
+    assert t.tail() == [Line(8.0, "Remote", "und dann")]
     assert t.offsets["system"] == 8 * BYTES_PER_SECOND
     _pcm(tmp_path / "system.pcm", 20)
     model.segments = [Seg(0.0, 3.0, " und dann gehen wir.")]
     assert t.tick() == [Line(8.0, "Remote", "und dann gehen wir.")]
+    assert t.tail() == []
     assert model.seconds == [10.0, 12.0]
+
+
+def test_transcriber_skips_a_silent_track_without_asking_the_model(tmp_path):
+    _pcm(tmp_path / "mic.pcm", 10)
+    model = FakeModel([Seg(0.0, 3.0, " never")])
+    t = Transcriber(model, tmp_path, ["mic"], "auto", {"mic": "Me"})
+    assert t.tick() == []
+    assert model.seconds == []
+    assert t.offsets["mic"] == 10 * BYTES_PER_SECOND
+
+
+def test_transcriber_detects_the_language_once_and_keeps_it(tmp_path):
+    _pcm(tmp_path / "system.pcm", 10)
+    model = FakeModel([Seg(1.0, 4.0, " Hello.")], Info("en", 0.99))
+    t = Transcriber(model, tmp_path, ["system"], "auto", {"system": "Remote"}, speech=heard)
+    t.tick()
+    _pcm(tmp_path / "system.pcm", live.LANGUAGE_HOLD_SECONDS)
+    t.tick()
+    _pcm(tmp_path / "system.pcm", live.LANGUAGE_HOLD_SECONDS + 10)
+    t.tick()
+    assert model.languages == [None, "en", None]
 
 
 def test_transcriber_waits_for_enough_audio(tmp_path):
@@ -69,6 +105,18 @@ def test_a_question_or_date_brings_the_next_look_forward():
     h.add([Line(5, "Remote", "Is it released tomorrow?")])
     assert h.due(3) == ""
     assert h.due(10) == "cue"
+
+
+def test_the_unfinished_last_segment_is_read_right_away_and_only_once():
+    claude = FakeClaude({"hints": [], "record_fixes": []})
+    h = Hinter(Config(), "call", "Me", workdir=None, runner=claude)
+    h.add([], [Line(12, "Remote", "is it released tomorrow")])
+    assert h.due(10) == "cue"
+    _, _, entry = h.look()
+    assert entry["at"] == 12 and "\n>>> new\n[00:12] Remote: is it released tomorrow" in claude.prompts[0]
+    assert h.due(1000) == ""
+    h.add([Line(12, "Remote", "is it released tomorrow or not")])
+    assert h.due(1000) == "cue"
 
 
 def _stream(result, *tool_inputs):
@@ -103,9 +151,7 @@ def test_parse_stream_raises_the_error_of_a_failed_run():
 
 
 def test_claude_runs_with_only_the_configured_tools_and_no_user_settings(tmp_path):
-    cfg = Config()
-    cfg.live.code_dirs = [str(tmp_path)]
-    cmd = live.claude_command(cfg, "haiku", "low", live.HINT_SCHEMA)
+    cmd = live.claude_command(Config(), "haiku", "low", live.HINT_SCHEMA, extra_dirs=(tmp_path,))
     assert cmd[cmd.index("--tools") + 1] == "Read,Grep,Glob"
     assert cmd[cmd.index("--permission-mode") + 1] == "default"
     assert cmd[cmd.index("--setting-sources") + 1] == ""
@@ -177,7 +223,9 @@ def test_transcriber_passes_the_glossary_as_hotwords(tmp_path):
             return iter([]), None
 
     model = Model([])
-    Transcriber(model, tmp_path, ["mic"], "en", {"mic": "Me"}, hotwords="Vamsi, PlanRadar").tick()
+    Transcriber(
+        model, tmp_path, ["mic"], "en", {"mic": "Me"}, hotwords="Vamsi, PlanRadar", speech=heard
+    ).tick()
     assert model.hotwords == "Vamsi, PlanRadar"
 
 

@@ -4,12 +4,12 @@ The recorder tees every audio track into `live/<role>.pcm` (16 kHz mono s16le) n
 the recording. `Transcriber` reads what is new every `live.interval` seconds and appends
 lines to `live/transcript.txt`. `Hinter` looks at the recent transcript every
 `live.hint_interval` seconds, sooner after a question, date or number: a quick model
-researches draft hints read-only in `live.workdir` (the user's knowledge base) and
-`live.code_dirs`, then `live.verify_model` checks each draft against its source and the
-newest lines before it is shown. Hints are printed, sent as `hint` events and appended to
-`live/hints.md`; notes that disagree with each other go to `live/record-fixes.md`; every
-look is logged to `live/hint-log.jsonl`. `review` compares the hints with the final
-transcript after the meeting.
+researches draft hints read-only in `live.workdir` (the user's knowledge base), then
+`live.verify_model` checks each draft against its source and the newest lines before it
+is shown. Hints are printed, sent as `hint` events and appended to `live/hints.md`; notes
+that disagree with each other go to `live/record-fixes.md`; every look is logged to
+`live/hint-log.jsonl`. `review` compares the hints with the final transcript after the
+meeting.
 """
 
 from __future__ import annotations
@@ -36,6 +36,10 @@ MIN_CHUNK_SECONDS = 2.0
 # A segment ending this close to the end of the audio read so far is probably cut mid-word;
 # it is transcribed again with the next chunk.
 CUT_MARGIN_SECONDS = 1.0
+# Detecting the language costs as much as transcribing the chunk, so a confident result is
+# kept for a while before the next chunk is detected again.
+LANGUAGE_CONFIDENCE = 0.8
+LANGUAGE_HOLD_SECONDS = 120.0
 RESEARCH_TIMEOUT_S = 90
 VERIFY_TIMEOUT_S = 90
 REVIEW_TIMEOUT_S = 900
@@ -114,12 +118,12 @@ Below is the live transcript of the last minutes: "{me}" is {name}, "Remote" is 
 else on the call. The transcript comes from fast speech recognition and has errors.
 Your working directory is {name}'s knowledge base (notes, open threads, history). Use your
 tools to look things up when the conversation touches something that may be recorded there.
-{code}
+Where the notes point to code on this machine, you may read that code too.
+
 First go through the new lines for everything the records could settle: a release or due
 date, a ticket or merge request, a number, who does what, a question nobody answered, and
 above all what {me} states, confirms or promises. Look each of them up. Answering without
-a lookup is only right when the new lines are small talk. For a question about how the
-product works, search the code first if you were given code to read.
+a lookup is only right when the new lines are small talk.
 
 Draft a hint for {name} only when it helps right now:
 - answer: a question was asked that the records answer
@@ -160,7 +164,7 @@ VERIFY_PROMPT = """You check draft hints before {name} sees them during a meetin
 right now ({today}). "{me}" in the transcript is {name}, "Remote" is everyone else; the
 transcript comes from fast speech recognition and has errors. A wrong or late hint costs
 more than a missing one. Your working directory is {name}'s knowledge base.
-{code}
+
 Open the source of every draft and check it. keep is false when:
 - the source does not say what the draft claims, or is about a different thing that only
   shares a word with the conversation
@@ -192,7 +196,7 @@ researched in. Read these files in {directory}:
 - live/hints.md: the hints that were shown, with the transcript time they refer to
 - live/hint-log.jsonl: every look of the hint model: drafts, verdicts, tool calls, seconds, lag
 - live/record-fixes.md: notes the hint model found to disagree (may be missing)
-{code}
+
 Check the claims yourself against the records and code; do not trust the hints. Write
 Markdown with exactly these sections, short and concrete:
 
@@ -232,9 +236,19 @@ class Line:
         return f"[{m:02d}:{s:02d}] {self.speaker}: {self.text}"
 
 
+def has_speech(audio) -> bool:
+    from faster_whisper.vad import get_speech_timestamps
+
+    return bool(get_speech_timestamps(audio))
+
+
 @dataclass
 class Transcriber:
-    """Turns the growing PCM files into transcript lines, one chunk per call."""
+    """Turns the growing PCM files into transcript lines, one chunk per call.
+
+    `tails` holds each track's last segment while it may still be cut mid-word: the hint
+    model reads it right away, the transcript gets it once the next chunk completes it.
+    """
 
     model: object
     directory: Path
@@ -243,6 +257,15 @@ class Transcriber:
     speakers: dict[str, str]
     offsets: dict[str, int] = field(default_factory=dict)
     hotwords: str = ""
+    speech: Callable[[object], bool] = has_speech
+    tails: dict[str, Line] = field(default_factory=dict)
+    detected: str = ""
+    detected_until: float = 0.0
+
+    def _language(self, now: float) -> str | None:
+        if self.language != "auto":
+            return self.language
+        return self.detected if now < self.detected_until else None
 
     def tick(self) -> list[Line]:
         import numpy as np
@@ -260,27 +283,34 @@ class Transcriber:
                 fh.seek(offset)
                 raw = fh.read(size - offset)
             audio = np.frombuffer(raw, np.int16).astype(np.float32) / 32768
-            chunk_seconds = len(audio) / RATE
-            segments = [
-                s
-                for s in self.model.transcribe(
-                    audio,
-                    language=None if self.language == "auto" else self.language,
-                    beam_size=1,
-                    vad_filter=True,
-                    condition_on_previous_text=False,
-                    hotwords=self.hotwords or None,
-                )[0]
-                if s.text.strip()
-            ]
-            consumed = len(raw)
-            if segments and chunk_seconds - segments[-1].end < CUT_MARGIN_SECONDS:
-                consumed = int(segments[-1].start * RATE) * 2
-                segments = segments[:-1]
+            self.tails.pop(role, None)
+            if not self.speech(audio):
+                self.offsets[role] = offset + len(raw)
+                continue
             start = offset / BYTES_PER_SECOND
+            language = self._language(start)
+            found, info = self.model.transcribe(
+                audio,
+                language=language,
+                beam_size=1,
+                vad_filter=True,
+                condition_on_previous_text=False,
+                hotwords=self.hotwords or None,
+            )
+            segments = [s for s in found if s.text.strip()]
+            if language is None and getattr(info, "language_probability", 0) >= LANGUAGE_CONFIDENCE:
+                self.detected, self.detected_until = info.language, start + LANGUAGE_HOLD_SECONDS
+            consumed = len(raw)
+            if segments and len(audio) / RATE - segments[-1].end < CUT_MARGIN_SECONDS:
+                tail = segments.pop()
+                consumed = int(tail.start * RATE) * 2
+                self.tails[role] = Line(start + tail.start, self.speakers[role], tail.text.strip())
             lines += [Line(start + s.start, self.speakers[role], s.text.strip()) for s in segments]
             self.offsets[role] = offset + consumed
         return sorted(lines, key=lambda line: line.start)
+
+    def tail(self) -> list[Line]:
+        return sorted(self.tails.values(), key=lambda line: line.start)
 
 
 @dataclass
@@ -312,25 +342,6 @@ class Call:
         return {"seconds": self.seconds, "cost": round(self.cost, 4), "tools": self.tools}
 
 
-def code_dirs(cfg: Config) -> list[Path]:
-    return [Path(d).expanduser() for d in cfg.live.code_dirs]
-
-
-def code_section(cfg: Config) -> str:
-    rows = []
-    for path in code_dirs(cfg):
-        branch = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True
-        ).stdout.strip()
-        rows.append(f"- {path}" + (f" (branch {branch})" if branch else ""))
-    if not rows:
-        return ""
-    return (
-        "\nFor questions about how the product works today you may also read this code. It is a\n"
-        "checkout, so its branch may differ from what is in production:\n" + "\n".join(rows) + "\n"
-    )
-
-
 def claude_command(
     cfg: Config, model: str, effort: str, schema: dict | None = None, extra_dirs: tuple[Path, ...] = ()
 ) -> list[str]:
@@ -354,7 +365,7 @@ def claude_command(
     ]
     if schema:
         cmd += ["--json-schema", json.dumps(schema)]
-    for path in (*code_dirs(cfg), *extra_dirs):
+    for path in extra_dirs:
         cmd += ["--add-dir", str(path)]
     if model:
         cmd += ["--model", model]
@@ -409,23 +420,29 @@ class Hinter:
     title: str
     me: str
     workdir: Path
-    code: str = ""
     runner: Runner = run_claude
     lines: list[Line] = field(default_factory=list)
     hints: list[Hint] = field(default_factory=list)
     rejected: list[str] = field(default_factory=list)
     fixes: list[str] = field(default_factory=list)
+    checking: list[str] = field(default_factory=list)
+    tail: list[Line] = field(default_factory=list)
+    tail_seen: str = ""
     seen: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def add(self, lines: list[Line]) -> None:
+    def add(self, lines: list[Line], tail: list[Line] = ()) -> None:
         with self.lock:
             self.lines += lines
+            self.tail = list(tail)
+
+    def _tail_text(self) -> str:
+        return " ".join(line.text for line in self.tail)
 
     def due(self, waited: float) -> str:
         """Why a look is due now: `interval`, `cue` (a question, date or number came up) or ``."""
         with self.lock:
-            new = self.lines[self.seen :]
+            new = self.lines[self.seen :] + (self.tail if self._tail_text() != self.tail_seen else [])
         if not new:
             return ""
         if waited >= self.cfg.live.cue_interval and any(CUE.search(line.text) for line in new):
@@ -433,9 +450,10 @@ class Hinter:
         return "interval" if waited >= self.cfg.live.hint_interval else ""
 
     def _transcript(self, mark: bool) -> str:
-        since = self.lines[-1].start - self.cfg.live.window_minutes * 60
+        heard = self.lines + self.tail
+        since = heard[-1].start - self.cfg.live.window_minutes * 60
         rendered = []
-        for i, line in enumerate(self.lines):
+        for i, line in enumerate(heard):
             if line.start < since:
                 continue
             if mark and i == self.seen:
@@ -449,14 +467,13 @@ class Hinter:
             "me": self.me,
             "title": self.title,
             "today": dt.date.today().strftime("%A, %Y-%m-%d"),
-            "code": self.code,
         }
 
     def prompt(self) -> str:
         return PROMPT.format(
             **self._frame(),
             earlier="\n".join(h.render() for h in self.hints) or "(none)",
-            rejected="\n".join(f"- {text}" for text in self.rejected) or "(none)",
+            rejected="\n".join(f"- {text}" for text in self.rejected + self.checking) or "(none)",
             transcript=self._transcript(mark=True),
         )
 
@@ -470,59 +487,81 @@ class Hinter:
             transcript = self._transcript(mark=False)
         return VERIFY_PROMPT.format(**self._frame(), drafts="\n".join(rendered), transcript=transcript)
 
-    def look(self) -> tuple[list[Hint], list[str], dict]:
-        """One look: research drafts, check them, and return shown hints, record fixes and the log entry."""
+    def research(self) -> tuple[list[dict], list[str], dict]:
+        """Draft hints for the newest lines: the drafts, new record fixes and the log entry."""
         live = self.cfg.live
         with self.lock:
             prompt = self.prompt()
-            at = self.lines[-1].start
-            self.seen = len(self.lines)
+            at = (self.lines + self.tail)[-1].start
+            self.seen, self.tail_seen = len(self.lines), self._tail_text()
         entry: dict = {
             "at": round(at, 1),
             "time": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         try:
-            research = self.runner(
+            call = self.runner(
                 claude_command(self.cfg, live.model, live.effort, HINT_SCHEMA),
                 prompt,
                 self.workdir,
                 RESEARCH_TIMEOUT_S,
             )
-            drafts = research.output.get("hints", [])
-            entry |= {"research": research.log(), "drafts": drafts}
-            fixes = [
+            drafts = call.output.get("hints", [])
+            found = [
                 f"{fix['text'].strip()} ({fix['source'].strip()})"
-                for fix in research.output.get("record_fixes", [])
+                for fix in call.output.get("record_fixes", [])
             ]
-            fixes = [fix for fix in fixes if fix not in self.fixes]
+        except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
+            entry["error"] = str(exc)
+            return [], [], entry
+        with self.lock:
+            fixes = [fix for fix in found if fix not in self.fixes]
             self.fixes += fixes
-            kept = drafts
+            self.checking += [draft["text"].strip() for draft in drafts]
+        entry |= {"research": call.log(), "drafts": drafts, "record_fixes": fixes}
+        return drafts, fixes, entry
+
+    def check(self, drafts: list[dict], entry: dict) -> list[Hint]:
+        """Check the drafts against their sources and the newest lines; returns the hints to show."""
+        live = self.cfg.live
+        kept, dropped = drafts, []
+        try:
             if drafts and live.verify_model:
-                check = self.runner(
+                call = self.runner(
                     claude_command(self.cfg, live.verify_model, live.verify_effort, VERIFY_SCHEMA),
                     self.verify_prompt(drafts),
                     self.workdir,
                     VERIFY_TIMEOUT_S,
                 )
-                verdicts = {v["index"]: v for v in check.output.get("verdicts", [])}
-                entry["verify"] = {**check.log(), "verdicts": check.output.get("verdicts", [])}
-                kept = []
-                for i, draft in enumerate(drafts):
-                    verdict = verdicts.get(i)
-                    if verdict and verdict["keep"]:
-                        kept.append({**draft, "text": verdict["text"].strip() or draft["text"]})
-                    else:
-                        self.rejected.append(draft["text"].strip())
+                verdicts = {v["index"]: v for v in call.output.get("verdicts", [])}
+                entry["verify"] = {**call.log(), "verdicts": call.output.get("verdicts", [])}
+                kept = [
+                    {**draft, "text": verdicts[i]["text"].strip() or draft["text"]}
+                    for i, draft in enumerate(drafts)
+                    if i in verdicts and verdicts[i]["keep"]
+                ]
+                dropped = [
+                    d["text"].strip() for i, d in enumerate(drafts) if not verdicts.get(i, {}).get("keep")
+                ]
         except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
             entry["error"] = str(exc)
-            return [], [], entry
+            kept, dropped = [], [draft["text"].strip() for draft in drafts]
         new = [
-            Hint(at, h["kind"], h["text"].strip(), h["source"].strip(), h["source_date"].strip())
+            Hint(entry["at"], h["kind"], h["text"].strip(), h["source"].strip(), h["source_date"].strip())
             for h in kept
         ]
-        self.hints += new
-        entry |= {"shown": [h.render() for h in new], "record_fixes": fixes}
-        return new, fixes, entry
+        with self.lock:
+            self.checking = [
+                text for text in self.checking if text not in {d["text"].strip() for d in drafts}
+            ]
+            self.rejected += dropped
+            self.hints += new
+        entry["shown"] = [hint.render() for hint in new]
+        return new
+
+    def look(self) -> tuple[list[Hint], list[str], dict]:
+        """One look in one go: research, then check."""
+        drafts, fixes, entry = self.research()
+        return ([] if "error" in entry else self.check(drafts, entry)), fixes, entry
 
 
 def _notify(hint: Hint) -> None:
@@ -549,9 +588,37 @@ def run(
         model, directory, roles, cfg.language, speakers, hotwords=", ".join(cfg.glossary)
     )
     workdir = Path(cfg.live.workdir).expanduser() if cfg.live.workdir else Path.cwd()
-    hinter = Hinter(cfg, title, me, workdir, code_section(cfg))
+    hinter = Hinter(cfg, title, me, workdir)
     emit({"event": "live", "workdir": str(workdir), "model": cfg.live.model or "default"})
     began = time.monotonic()
+
+    writing = threading.Lock()
+
+    def finish(drafts: list[dict], entry: dict, started: float) -> None:
+        new = hinter.check(drafts, entry) if "error" not in entry else []
+        entry["lag"] = round(time.monotonic() - began - entry["at"], 1)
+        with writing:
+            with (directory / "hint-log.jsonl").open("a") as log:
+                log.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            with (directory / "hints.md").open("a") as hints_md:
+                hints_md.writelines(hint.render() + "\n" for hint in new)
+        if "error" in entry:
+            emit(
+                {"event": "warning", "kind": "hint-failed", "message": f"hint model failed: {entry['error']}"}
+            )
+        for hint in new:
+            emit(
+                {
+                    "event": "hint",
+                    "at": round(hint.at, 1),
+                    "kind": hint.kind,
+                    "text": hint.text,
+                    "source": hint.cited,
+                    "seconds": round(time.monotonic() - started, 1),
+                }
+            )
+            if cfg.live.notify:
+                _notify(hint)
 
     def hint_loop() -> None:
         last = began - cfg.live.hint_interval
@@ -560,37 +627,15 @@ def run(
             if not trigger:
                 continue
             last = time.monotonic()
-            new, fixes, entry = hinter.look()
-            entry |= {"trigger": trigger, "lag": round(time.monotonic() - began - entry["at"], 1)}
-            with (directory / "hint-log.jsonl").open("a") as log:
-                log.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            if "error" in entry:
-                emit(
-                    {
-                        "event": "warning",
-                        "kind": "hint-failed",
-                        "message": f"hint model failed: {entry['error']}",
-                    }
-                )
-                continue
+            drafts, fixes, entry = hinter.research()
+            entry["trigger"] = trigger
             if fixes:
-                with (directory / "record-fixes.md").open("a") as fixes_md:
+                with writing, (directory / "record-fixes.md").open("a") as fixes_md:
                     fixes_md.writelines(f"- {fix}\n" for fix in fixes)
-            with (directory / "hints.md").open("a") as hints_md:
-                hints_md.writelines(hint.render() + "\n" for hint in new)
-            for hint in new:
-                emit(
-                    {
-                        "event": "hint",
-                        "at": round(hint.at, 1),
-                        "kind": hint.kind,
-                        "text": hint.text,
-                        "source": hint.cited,
-                        "seconds": round(time.monotonic() - last, 1),
-                    }
-                )
-                if cfg.live.notify:
-                    _notify(hint)
+            if drafts:
+                threading.Thread(target=finish, args=(drafts, entry, last), daemon=True).start()
+            else:
+                finish(drafts, entry, last)
 
     threading.Thread(target=hint_loop, daemon=True).start()
     with (directory / "transcript.txt").open("a") as transcript:
@@ -608,7 +653,7 @@ def run(
                     }
                 )
             transcript.flush()
-            hinter.add(lines)
+            hinter.add(lines, transcriber.tail())
             if stopping:
                 return
 
@@ -624,7 +669,6 @@ def review(session_dir: Path, cfg: Config, title: str, runner: Runner = run_clau
         today=dt.date.today().isoformat(),
         directory=session_dir,
         transcript="transcript.md" if (session_dir / "transcript.md").exists() else "live/transcript.txt",
-        code=code_section(cfg),
     )
     call = runner(
         claude_command(cfg, cfg.live.review_model, "medium", extra_dirs=(session_dir,)),

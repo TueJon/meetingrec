@@ -124,10 +124,10 @@ meetingrec process --fast <dir>          # large-v3-turbo instead of large-v3
 
 ### Live hints (experimental)
 
-`--live` transcribes the call while it runs (`large-v3-turbo`, every 10 s, with your
+`--live` transcribes the call while it runs (`large-v3-turbo`, every 5 s, with your
 `glossary` as hot words) and lets Claude (through your Claude CLI login) read the last
 minutes every 30 s, sooner after a question, date or number. A quick model (`haiku`)
-researches read-only in a knowledge base you name (notes, a repo) and in `code_dirs`, and
+researches read-only in the knowledge base you name (notes, a repo), and
 drafts a hint only when it helps right now: an answer, something to mention, a question to
 ask, a contradiction with your notes or an open item. A second model (`verify_model`)
 opens the source of every draft and drops what is wrong, outdated or already settled in
@@ -200,9 +200,9 @@ max_keyframes = 12
 
 [live]
 asr_model = "large-v3-turbo"      # fast Whisper for the running transcript
-interval = 10                     # seconds between transcript chunks
+interval = 5                      # seconds between transcript chunks
 hint_interval = 30                # longest wait between looks by the hint model
-cue_interval = 8                  # wait between looks after a question, date or number
+cue_interval = 5                  # wait between looks after a question, date or number
 window_minutes = 10               # transcript the hint model sees
 model = "haiku"                   # Claude CLI model alias that researches draft hints
 effort = "low"
@@ -210,7 +210,6 @@ verify_model = "sonnet"           # checks every draft before it is shown; "" = 
 verify_effort = "low"
 review_model = "sonnet"           # reviews the hints after the meeting; "" = off
 workdir = ""                      # knowledge base to research in; "" = current directory
-code_dirs = []                    # code checkouts it may read for how-it-works questions
 tools = ["Read", "Grep", "Glob"]  # tools the hint model has (add "Bash" with care)
 allowed_tools = ["Read", "Grep", "Glob"]  # e.g. "Bash(bin/search:*)" for a search script
 notify = false                    # desktop notifications (visible when sharing the screen)
