@@ -190,7 +190,7 @@ def test_review_writes_the_report_next_to_the_hints(tmp_path):
 
     def claude(cmd, prompt, cwd, timeout):
         seen.append((cmd, prompt))
-        return live.Call({}, "## Verdict\nfine", [], 0.1, 20.0)
+        return live.Call({}, "Done, here it is.\n\n## Verdict\nfine", [], 0.1, 20.0)
 
     path = live.review(tmp_path, cfg, "call", runner=claude)
     assert path.read_text() == "## Verdict\nfine\n"

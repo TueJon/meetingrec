@@ -118,7 +118,8 @@ tools to look things up when the conversation touches something that may be reco
 First go through the new lines for everything the records could settle: a release or due
 date, a ticket or merge request, a number, who does what, a question nobody answered, and
 above all what {me} states, confirms or promises. Look each of them up. Answering without
-a lookup is only right when the new lines are small talk.
+a lookup is only right when the new lines are small talk. For a question about how the
+product works, search the code first if you were given code to read.
 
 Draft a hint for {name} only when it helps right now:
 - answer: a question was asked that the records answer
@@ -130,7 +131,8 @@ Draft a hint for {name} only when it helps right now:
 No hint is the normal answer. Rules:
 - A hint states what the records say. What someone says in the meeting is never a source,
   and a hint never repeats or confirms it as a fact.
-- Skip what the newest lines already answer, ask or settle.
+- Skip what the newest lines already answer, ask or settle. Notes about this very meeting
+  are not a source either.
 - Records age. Rely on the newest entry on a topic and give its date as source_date
   (YYYY-MM-DD, or "unknown"). Never present an old plan or design note as the current state.
 - A record matches only when it is about the same thing, not when it shares a word: an
@@ -164,7 +166,10 @@ Open the source of every draft and check it. keep is false when:
   shares a word with the conversation
 - a newer record on the topic says something else
 - the draft repeats what someone said in the meeting instead of the records
-- the newest transcript lines already answer, ask or settle it, so it comes too late
+- the transcript already contains its conclusion, so it comes too late. The topic being
+  discussed is not enough: when the speakers assume something else than the record says, or
+  are still searching for what the record holds, the draft is on time
+- its source is a note about this very meeting
 - it would not change what {name} says or does in the next minute
 
 Otherwise keep is true. text is the hint as it should be shown: at most 25 words, in the
@@ -627,10 +632,11 @@ def review(session_dir: Path, cfg: Config, title: str, runner: Runner = run_clau
         workdir,
         REVIEW_TIMEOUT_S,
     )
-    if not call.text.strip():
+    report = call.text[max(call.text.find("## "), 0) :].strip()
+    if not report:
         raise RuntimeError("the hint review came back empty")
     path = directory / "review.md"
-    path.write_text(call.text.strip() + "\n")
+    path.write_text(report + "\n")
     return path
 
 
