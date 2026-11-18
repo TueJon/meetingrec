@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -47,6 +48,19 @@ def _record(cfg, title: str, out_root: Path | None, events: bool, **options) -> 
     emit({"event": "saved", "dir": str(session.dir)})
     click.echo(f"\nSaved: {session.dir}")
     return session
+
+
+def _review_hints(cfg, session: Session) -> None:
+    from . import live
+
+    click.echo("[hints] reviewing the live hints against the final transcript")
+    try:
+        path = live.review(session.dir, cfg, session.meta.title)
+    except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        click.echo(f"[hints] review failed: {exc}", err=True)
+        return
+    if path:
+        click.echo(f"[hints] {path}")
 
 
 def _capture_options(fn):
@@ -120,6 +134,8 @@ def full(cfg, title, out_root, events, fast, asr, **options) -> None:
     if events:
         click.echo(json.dumps({"event": "processing", "dir": str(session.dir)}))
     pipeline.process(session, cfg, fast=fast)
+    if options["live"]:
+        _review_hints(cfg, session)
     if events:
         click.echo(json.dumps({"event": "done", "dir": str(session.dir)}))
     click.echo(f"\nDone: {session.dir}")
@@ -133,9 +149,14 @@ def full(cfg, title, out_root, events, fast, asr, **options) -> None:
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     help="Knowledge base the hint model researches in (default: config, else cwd).",
 )
+@click.option(
+    "--out",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Keep the transcript, hints and hint log in this directory (default: a temporary one).",
+)
 @click.option("--events", is_flag=True, help="Print JSON-lines events on stdout.")
 @click.pass_obj
-def replay(cfg, meeting, speed, hints_in, events) -> None:
+def replay(cfg, meeting, speed, hints_in, out, events) -> None:
     """Try live mode on a recorded meeting: replay its audio and print transcript and hints."""
     import tempfile
     import threading
@@ -151,7 +172,8 @@ def replay(cfg, meeting, speed, hints_in, events) -> None:
         session.track_audio(role)
     stop = threading.Event()
     with tempfile.TemporaryDirectory(prefix="meetingrec-live-") as tmp:
-        directory = Path(tmp)
+        directory = out or Path(tmp)
+        directory.mkdir(parents=True, exist_ok=True)
         feeder = threading.Thread(target=live.replay, args=(session.dir, directory, roles, speed, stop))
         feeder.start()
         threading.Thread(target=lambda: (feeder.join(), stop.set()), daemon=True).start()
@@ -170,6 +192,21 @@ def replay(cfg, meeting, speed, hints_in, events) -> None:
             feeder.join()
             hints = (directory / "hints.md").read_text() if (directory / "hints.md").exists() else ""
     click.echo(f"\nHints:\n{hints or '(none)'}")
+
+
+@cli.command("review-hints")
+@click.argument("meeting", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--hints-in",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Knowledge base the hints were researched in (default: config, else cwd).",
+)
+@click.pass_obj
+def review_hints(cfg, meeting, hints_in) -> None:
+    """Check a meeting's live hints against its final transcript; writes live/review.md."""
+    if hints_in:
+        cfg.live.workdir = str(hints_in)
+    _review_hints(cfg, Session.load(meeting))
 
 
 @cli.command()

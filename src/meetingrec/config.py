@@ -65,13 +65,18 @@ class SummaryConfig:
 @dataclass
 class LiveConfig:
     asr_model: str = "large-v3-turbo"  # fast Whisper for the running transcript
-    interval: float = 15.0  # seconds between transcript chunks
-    hint_interval: float = 30.0  # seconds between looks by the hint model
+    interval: float = 10.0  # seconds between transcript chunks
+    hint_interval: float = 30.0  # longest wait between looks by the hint model
+    cue_interval: float = 8.0  # wait between looks after a question, date or number came up
     window_minutes: float = 10.0  # transcript the hint model sees
-    model: str = "haiku"  # Claude CLI model alias for hints
+    model: str = "haiku"  # Claude CLI model alias that researches draft hints
     effort: str = "low"
+    verify_model: str = "sonnet"  # checks every draft against its source before it is shown; "" = off
+    verify_effort: str = "low"
+    review_model: str = "sonnet"  # reviews the hints against the final transcript; "" = off
     workdir: str = ""  # knowledge base the hint model researches in; "" = current directory
     workdirs: list[str] = field(default_factory=list)  # further knowledge bases the window offers
+    code_dirs: list[str] = field(default_factory=list)  # code it may read for how-it-works questions
     tools: list[str] = field(default_factory=lambda: ["Read", "Grep", "Glob"])
     allowed_tools: list[str] = field(default_factory=lambda: ["Read", "Grep", "Glob"])
     notify: bool = False  # desktop notifications (visible when sharing the screen)

@@ -124,16 +124,27 @@ meetingrec process --fast <dir>          # large-v3-turbo instead of large-v3
 
 ### Live hints (experimental)
 
-`--live` transcribes the call while it runs (`large-v3-turbo`, every 15 s) and lets a quick
-Claude model (`haiku` through your Claude CLI login) read the last minutes every 30 s. It
-looks things up read-only in a knowledge base you name (notes, a repo) and prints a hint
-only when it helps right now: an answer, something to mention, a question to ask, a
-contradiction with your notes or an open item. Transcript and hints land in `live/` in the
-meeting directory; `--events` emits them as `transcript` and `hint` events.
+`--live` transcribes the call while it runs (`large-v3-turbo`, every 10 s, with your
+`glossary` as hot words) and lets Claude (through your Claude CLI login) read the last
+minutes every 30 s, sooner after a question, date or number. A quick model (`haiku`)
+researches read-only in a knowledge base you name (notes, a repo) and in `code_dirs`, and
+drafts a hint only when it helps right now: an answer, something to mention, a question to
+ask, a contradiction with your notes or an open item. A second model (`verify_model`)
+opens the source of every draft and drops what is wrong, outdated or already settled in
+the call. Everything lands in `live/` in the meeting directory:
+
+- `transcript.txt` and `hints.md`: the running transcript and the hints that were shown
+  (`--events` emits them as `transcript` and `hint` events)
+- `record-fixes.md`: notes that disagree with each other or that the meeting made outdated
+- `hint-log.jsonl`: every look with its drafts, verdicts, lookups, seconds and cost
+- `review.md`: after `full`, a check of the hints against the final transcript: which
+  were useful, late or wrong, and what the notes held that no hint brought up
 
 ```bash
 meetingrec full sync --app chrome --live --hints-in ~/notes   # hints from ~/notes
 meetingrec replay <dir> --speed 2 --hints-in ~/notes          # try it on a past meeting
+meetingrec replay <dir> --out /tmp/try --hints-in ~/notes     # … and keep hints and log
+meetingrec review-hints <dir> --hints-in ~/notes              # write live/review.md again
 ```
 
 Name a speaker once and they are recognized in later meetings:
@@ -189,12 +200,17 @@ max_keyframes = 12
 
 [live]
 asr_model = "large-v3-turbo"      # fast Whisper for the running transcript
-interval = 15                     # seconds between transcript chunks
-hint_interval = 30                # seconds between looks by the hint model
+interval = 10                     # seconds between transcript chunks
+hint_interval = 30                # longest wait between looks by the hint model
+cue_interval = 8                  # wait between looks after a question, date or number
 window_minutes = 10               # transcript the hint model sees
-model = "haiku"                   # Claude CLI model alias
+model = "haiku"                   # Claude CLI model alias that researches draft hints
 effort = "low"
+verify_model = "sonnet"           # checks every draft before it is shown; "" = off
+verify_effort = "low"
+review_model = "sonnet"           # reviews the hints after the meeting; "" = off
 workdir = ""                      # knowledge base to research in; "" = current directory
+code_dirs = []                    # code checkouts it may read for how-it-works questions
 tools = ["Read", "Grep", "Glob"]  # tools the hint model has (add "Bash" with care)
 allowed_tools = ["Read", "Grep", "Glob"]  # e.g. "Bash(bin/search:*)" for a search script
 notify = false                    # desktop notifications (visible when sharing the screen)
@@ -209,8 +225,9 @@ This tool records conversations. Tell participants and follow your local law.
 - Recordings, transcripts and summaries stay under `~/Recordings/meetings/`. The
   summary step sends the transcript, your notes and the selected keyframes to Claude
   through your own Claude CLI login.
-- `--live` sends the running transcript to Claude every `hint_interval` seconds, and
-  hints quote your knowledge base: keep the terminal off a shared screen.
+- `--live` sends the running transcript to Claude at least every `hint_interval` seconds,
+  and hints quote your knowledge base: keep the terminal off a shared screen. The hint
+  calls run without your Claude Code user settings and hooks.
 - `--screen window` asks for a window every meeting. `--screen monitor` remembers the
   monitor and records everything that appears on it, including notifications. On X11 the
   window is clicked and the monitor typed in the terminal; the monitor is remembered in

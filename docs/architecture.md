@@ -25,8 +25,11 @@
 - `transcribe.py`: faster-whisper per track (no VAD on a `room` track), plus echo dropping on the mic track.
 - `live.py`: live mode. The recorder tees each track into `live/<role>.pcm` (16 kHz
   s16le); `Transcriber` decodes new audio per tick and holds back a segment cut at the
-  end of the chunk, `Hinter` asks the Claude CLI (read-only tools, run in `live.workdir`)
-  for hints over the recent transcript. `replay` feeds a recorded meeting's WAVs instead.
+  end of the chunk, `Hinter` runs two Claude CLI calls per look over the recent transcript (read-only
+  tools, run in `live.workdir`, without user settings or hooks): one researches drafts,
+  one checks each draft against its source and the newest lines. Each look is a line in
+  `live/hint-log.jsonl`. `review` compares the hints with the final transcript after
+  `full`. `replay` feeds a recorded meeting's WAVs instead.
 - `cloud_asr.py`: the `gemini` engine: Gemini Transcribe on Vertex AI over REST with a
   `gcloud` access token, chunks cut at the quietest moment before 10 minutes.
 - `diarize.py`: pyannote on the `system` (or `mixed`, or `room`) track, and assignment of
