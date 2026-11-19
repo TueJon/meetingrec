@@ -131,12 +131,12 @@ def test_parse_stream_returns_the_result_and_the_lookups():
     answer = {"type": "tool_use", "name": "StructuredOutput", "input": {"hints": []}}
     stdout = _stream(
         {"is_error": False, "structured_output": {"hints": []}, "total_cost_usd": 0.01},
-        ("Grep", {"pattern": "KWEB-1", "path": "notes", "output_mode": "content"}),
+        ("Grep", {"pattern": "DEMO-1", "path": "notes", "output_mode": "content"}),
         (answer["name"], answer["input"]),
     )
     result, tools = live.parse_stream(stdout)
     assert result["structured_output"] == {"hints": []}
-    assert tools == [{"tool": "Grep", "pattern": "KWEB-1", "path": "notes"}]
+    assert tools == [{"tool": "Grep", "pattern": "DEMO-1", "path": "notes"}]
 
 
 def test_parse_stream_raises_the_error_of_a_failed_run():
@@ -234,9 +234,9 @@ def test_transcriber_passes_the_glossary_as_hotwords(tmp_path):
 
     model = Model([])
     Transcriber(
-        model, tmp_path, ["mic"], "en", {"mic": "Me"}, hotwords="Vamsi, PlanRadar", speech=heard
+        model, tmp_path, ["mic"], "en", {"mic": "Me"}, hotwords="Alex, ExampleCorp", speech=heard
     ).tick()
-    assert model.hotwords == "Vamsi, PlanRadar"
+    assert model.hotwords == "Alex, ExampleCorp"
 
 
 def test_review_writes_the_report_next_to_the_hints(tmp_path):
