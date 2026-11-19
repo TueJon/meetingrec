@@ -23,6 +23,14 @@
 - `gui.py`: GTK 4 / libadwaita window, run by the system Python (`gui_launcher.py`); it
   imports nothing from the package and drives the CLI (`targets --json`, `--events`).
 - `transcribe.py`: faster-whisper per track (no VAD on a `room` track), plus echo dropping on the mic track.
+- `live.py`: live mode. The recorder tees each track into `live/<role>.pcm` (16 kHz
+  s16le); `Transcriber` decodes new audio per tick and holds back a segment cut at the
+  end of the chunk, `Hinter` runs two Claude CLI calls per look over the recent transcript (read-only
+  tools, run in `live.workdir`, without user settings or hooks): one researches drafts,
+  one checks each draft against its source, the newest lines and the hints already shown, and may
+rewrite it, change its kind or park it for later. Each look is a line in
+  `live/hint-log.jsonl`. `review` compares the hints with the final transcript after
+  `full`. `replay` feeds a recorded meeting's WAVs instead.
 - `cloud_asr.py`: the `gemini` engine: Gemini Transcribe on Vertex AI over REST with a
   `gcloud` access token, chunks cut at the quietest moment before 10 minutes.
 - `diarize.py`: pyannote on the `system` (or `mixed`, or `room`) track, and assignment of

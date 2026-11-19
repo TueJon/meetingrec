@@ -117,3 +117,37 @@ def test_mic_name_resolves_the_default_and_unknown_sources():
     assert gui_model.mic_name("usb", mics) == "USB Mic"
     assert gui_model.mic_name("gone", mics) == "gone"
     assert gui_model.mic_name("", []) == "System default"
+
+
+def test_argv_with_live_hints(monkeypatch):
+    monkeypatch.setattr(gui_model, "CLI", ["meetingrec"])
+    assert Setup(process=False, live=True, hints_in="/kb").argv()[-3:] == ["--live", "--hints-in", "/kb"]
+    assert Setup(process=False, live=True).argv()[-1] == "--live"
+    assert "--live" not in Setup(hints_in="/kb").argv()
+
+
+def test_knowledge_bases_lists_existing_configured_folders(tmp_path):
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "repo").mkdir()
+    config = tmp_path / "config.toml"
+    folders = ", ".join(f'"{tmp_path}/{name}"' for name in ("repo", "gone", "notes"))
+    config.write_text(f'[live]\nworkdir = "{tmp_path}/notes"\nworkdirs = [{folders}]\n')
+    assert gui_model.knowledge_bases(config) == [f"{tmp_path}/repo", f"{tmp_path}/notes"]
+    assert gui_model.knowledge_bases(tmp_path / "missing.toml") == []
+
+
+def test_a_hint_shows_its_age_and_a_short_source(tmp_path):
+    assert [gui_model.age_text(s) for s in (2, 12.7, 59, 60, 185)] == [
+        "now",
+        "12 s ago",
+        "59 s ago",
+        "1 min ago",
+        "3 min ago",
+    ]
+    assert gui_model.source_label("knowledge/a.md:12 (Scope)", "2026-11-16") == "a.md:12 · 2026-11-16"
+    assert gui_model.source_label("somewhere", "unknown") == "somewhere"
+    (tmp_path / "knowledge").mkdir()
+    (tmp_path / "knowledge" / "a.md").write_text("x")
+    assert gui_model.source_path("knowledge/a.md:12", str(tmp_path)) == tmp_path / "knowledge" / "a.md"
+    assert gui_model.source_path("knowledge/b.md:1", str(tmp_path)) is None
+    assert gui_model.source_path("knowledge/a.md:12", "") is None

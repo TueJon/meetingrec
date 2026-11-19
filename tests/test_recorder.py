@@ -135,3 +135,14 @@ def test_health_warns_once_per_burst_of_mic_dropouts():
     assert health.dropout_seconds == 5.0
     health.level("mic", -30.0, -10.0, now=6.0)
     assert health.dropout_seconds == 5.0
+
+
+def test_live_tees_each_track_into_16k_pcm():
+    live = Path("/tmp/x/live")
+    argv = build_pipeline(audio=AUDIO, output=OUT, live=live)
+    assert argv.count("flacenc") == 2
+    assert f"location={live / 'mic.pcm'}" in argv
+    assert f"location={live / 'system.pcm'}" in argv
+    assert argv.count("audio/x-raw,format=S16LE,rate=16000,channels=1") == 2
+    assert argv.index("name=tee_mic") < argv.index("tee_mic.")
+    assert "tee" not in build_pipeline(audio=AUDIO, output=OUT)

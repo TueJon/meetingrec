@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import __version__
+from .. import live as live_mode
 from ..config import Config
 from ..session import Session, TrackMeta, VideoMeta
 from . import apps, x11
@@ -45,6 +46,7 @@ DROPOUT_WINDOW_SECONDS = 10.0
 WARN_EVERY_SECONDS = 30.0
 MIN_FILE_BYTES = 1024
 KEYFRAME_SECONDS = 10
+LIVE_JOIN_TIMEOUT = 60
 VIDEO_BITRATE_KBPS = 400
 
 
@@ -139,7 +141,27 @@ def encoder_args(encoder: str, fps: int) -> list[str]:
     raise ValueError(f"unsupported video encoder {encoder!r} (use auto, nvh264enc or x264enc)")
 
 
-def _audio_branch(source: str, role: str) -> list[str]:
+def _live_branch(role: str, live: Path) -> list[str]:
+    return [
+        f"tee_{role}.",
+        "!",
+        "queue",
+        "leaky=downstream",
+        "!",
+        "audioconvert",
+        "!",
+        "audioresample",
+        "!",
+        "audio/x-raw,format=S16LE,rate=16000,channels=1",
+        "!",
+        "filesink",
+        f"location={live / (role + '.pcm')}",
+        "buffer-mode=unbuffered",
+    ]
+
+
+def _audio_branch(source: str, role: str, live: Path | None = None) -> list[str]:
+    tee = ["tee", f"name=tee_{role}", "!", "queue", "!"] if live else []
     return [
         "pulsesrc",
         f"device={source}",
@@ -164,12 +186,14 @@ def _audio_branch(source: str, role: str) -> list[str]:
         f"name=level_{role}",
         f"interval={LEVEL_INTERVAL_NS}",
         "!",
+        *tee,
         "flacenc",
         "!",
         "taginject",
         f"tags=title={role}",
         "!",
         "mux.",
+        *(_live_branch(role, live) if live else []),
     ]
 
 
@@ -204,11 +228,13 @@ def build_pipeline(
     audio: list[tuple[str, str]],
     output: Path,
     video: VideoSpec | None = None,
+    live: Path | None = None,
 ) -> list[str]:
-    """`audio` is (role, pulse source) per track, in stream order. `-m` prints the level messages."""
+    """`audio` is (role, pulse source) per track, in stream order. `-m` prints the level messages.
+    With `live`, each track is also written there as 16 kHz PCM for the live transcript."""
     argv = ["gst-launch-1.0", "-m", "-e", "matroskamux", "name=mux", "!", "filesink", f"location={output}"]
     for role, source in audio:
-        argv += _audio_branch(source, role)
+        argv += _audio_branch(source, role, live)
     if video:
         argv += _video_branch(video)
     return argv
@@ -300,10 +326,17 @@ class Health:
 def print_event(event: dict) -> None:
     if event["event"] == "warning":
         print(f"warning: {event['message']}", file=sys.stderr, flush=True)
+    elif event["event"] == "transcript":
+        sys.stdout.write(f"  {event['speaker']}: {event['text']}\n")
+        sys.stdout.flush()
+    elif event["event"] == "hint":
+        sys.stdout.write(f"\n>>> {event['kind'].upper()}: {event['text']}\n    ({event['source']})\n\n")
+        sys.stdout.flush()
 
 
 def json_event(event: dict) -> None:
-    print(json.dumps(event), flush=True)
+    sys.stdout.write(json.dumps(event) + "\n")
+    sys.stdout.flush()
 
 
 # ---- process control ----------------------------------------------------------
@@ -371,6 +404,25 @@ class _Child:
                 continue  # already stopping; a second Ctrl+C changes nothing
 
 
+# ---- live mode ----------------------------------------------------------------
+
+
+def _start_live(
+    session: Session, cfg: Config, directory: Path, roles: list[str], emit: Emit
+) -> tuple[threading.Event, threading.Thread]:
+    stop = threading.Event()
+
+    def work() -> None:
+        try:
+            live_mode.run(directory, cfg, title=session.meta.title, roles=roles, stop=stop, emit=emit)
+        except Exception as exc:  # live mode must never end the recording
+            emit({"event": "warning", "kind": "live-failed", "message": f"live mode stopped: {exc}"})
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    return stop, thread
+
+
 # ---- entry point ------------------------------------------------------------
 
 
@@ -418,6 +470,7 @@ def record(
     room: bool = False,
     window_id: int | None = None,
     monitor: str | None = None,
+    live: bool = False,
     emit: Emit = print_event,
 ) -> None:
     """Room mode records the microphone alone; `app` records one application instead of the system mix."""
@@ -426,6 +479,9 @@ def record(
     if app and system:
         raise RuntimeError("--app and --system are alternatives")
     output = session.path("recording.mkv" if screen else "recording.mka")
+    live_dir = live_mode.live_dir(session.dir) if live else None
+    if live_dir:
+        live_dir.mkdir()
     session.meta.recorder_version = __version__
     session.meta.mode = "room" if room else "call"
     mic_src = resolve_mic(cfg, mic)
@@ -461,7 +517,15 @@ def record(
 
         if not screen:
             print(f"screen: off\nfile:   {output}")
-            _capture(session, build_pipeline(audio=audio, output=output), output, (), emit)
+            _capture(
+                session,
+                cfg,
+                build_pipeline(audio=audio, output=output, live=live_dir),
+                output,
+                (),
+                emit,
+                live_dir,
+            )
             return
 
         encoder = resolve_encoder(cfg.capture.video_encoder)
@@ -479,21 +543,41 @@ def record(
                 session.meta.video = VideoMeta(file=output.name, source_type=source_type, fps=video.fps)
                 print(f"screen: {source_type} {video.width}x{video.height} @ {video.fps} fps ({encoder})")
                 print(f"file:   {output}")
-                _capture(session, build_pipeline(audio=audio, output=output, video=video), output, fds, emit)
+                _capture(
+                    session,
+                    cfg,
+                    build_pipeline(audio=audio, output=output, video=video, live=live_dir),
+                    output,
+                    fds,
+                    emit,
+                    live_dir,
+                )
         except ScreenCastCancelled:
             session.dir.rmdir()  # nothing was recorded
             raise
 
 
-def _capture(session: Session, argv: list[str], output: Path, fds: tuple[int, ...], emit: Emit) -> None:
+def _capture(
+    session: Session,
+    cfg: Config,
+    argv: list[str],
+    output: Path,
+    fds: tuple[int, ...],
+    emit: Emit,
+    live_dir: Path | None,
+) -> None:
     session.meta.started_at = _now()
     session.save()  # a crash still leaves usable metadata
     roles = [t.role for t in session.meta.tracks]
     health = Health(emit, mic_role=roles[0])
+    live = _start_live(session, cfg, live_dir, roles, emit) if live_dir else None
     child = _Child(argv, fds, health, session.work_dir / "capture.log")
     emit({"event": "recording", "dir": str(session.dir), "tracks": roles, "video": bool(session.meta.video)})
     print("Recording. Ctrl+C to stop.", flush=True)
     code = child.run()
+    if live:
+        live[0].set()
+        live[1].join(timeout=LIVE_JOIN_TIMEOUT)
     session.meta.ended_at = _now()
     session.meta.mic_dropout_seconds = round(health.dropout_seconds, 1)
     session.save()

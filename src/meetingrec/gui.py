@@ -14,31 +14,48 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))  # run as a script under `python -I`
 from gui_model import (  # noqa: E402
     METER_FLOOR_DB,
+    age_text,
     agent_prompt,
     call_candidates,
     db_fraction,
     entry_title,
     fetch_targets,
+    knowledge_bases,
     load_setup,
     mic_name,
     refresh_for_today,
     save_setup,
+    source_label,
+    source_path,
 )
 
 APP_ID = "io.github.tuejon.meetingrec"
 _PREVIEW_LEVEL = re.compile(r"rms=\(GValueArray\)< ([^,>]+)")
 _STAGE = re.compile(r"^\[(\w+)\]")
+HINT_NEW_SECONDS = 20
+CSS = """
+.hint-chip { border-radius: 6px; padding: 2px 8px; font-size: 0.75em; font-weight: 700; }
+.hint-answer { background: @success_bg_color; color: @success_fg_color; }
+.hint-ask { background: @accent_bg_color; color: @accent_fg_color; }
+.hint-contradiction { background: @error_bg_color; color: @error_fg_color; }
+.hint-remind { background: @warning_bg_color; color: @warning_fg_color; }
+.hint-mention { background: alpha(currentColor, 0.15); }
+.hint-new { background: alpha(@accent_bg_color, 0.14); }
+.hint-source { padding: 0 6px; min-height: 0; font-size: 0.8em; font-weight: 400; }
+.hint-vote { padding: 0 6px; min-height: 0; }
+"""
 # ---- small widget helpers ----------------------------------------------------
 
 
@@ -158,7 +175,15 @@ class Window(Adw.ApplicationWindow):
         self.set_content(self.toasts)
         self.preview: MicPreview | None = None
         self.connect("close-request", self._on_close)
+        styles = Gtk.CssProvider()
+        styles.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), styles, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
         self.nav.add(self._home_page())
+        self.nav.connect(
+            "popped", lambda *_: self.nav.get_visible_page().get_tag() == "home" and self._refresh_home_live()
+        )
 
     # ---- data
 
@@ -198,6 +223,7 @@ class Window(Adw.ApplicationWindow):
             label=self.setup.describe(), wrap=True, max_width_chars=60, justify=Gtk.Justification.CENTER
         )
         self.quick_label.add_css_class("dim-label")
+        self.home_live = Adw.PreferencesGroup()
         folder = Gtk.Button(label="Open recordings folder", halign=Gtk.Align.CENTER)
         folder.add_css_class("flat")
         folder.connect("clicked", lambda *_: self._load_targets() and self._open(self.targets["out_root"]))
@@ -206,12 +232,51 @@ class Window(Adw.ApplicationWindow):
             heading,
             intro,
             group,
+            self.home_live,
             pill("Quick start", "suggested-action", self._quick_start),
             self.quick_label,
             pill("Set up recording…", None, self._wizard),
             folder,
         )
+        self.home_live_rows: list[Adw.PreferencesRow] = []
+        self._refresh_home_live()
         return page("Meeting recorder", body, "home")
+
+    def _refresh_home_live(self) -> None:
+        for row in self.home_live_rows:
+            self.home_live.remove(row)
+        self.home_live_rows = self._live_rows()
+        for row in self.home_live_rows:
+            self.home_live.add(row)
+
+    def _live_rows(self) -> list[Adw.PreferencesRow]:
+        """The live hints switch and its knowledge base, written straight into the setup."""
+        live = Adw.SwitchRow(
+            title="Live hints",
+            subtitle="Transcribes as you talk; a quick Claude model looks things up and suggests what to "
+            "ask or mention. Keep this window off a shared screen.",
+        )
+        live.set_active(self.setup.live)
+        rows: list[Adw.PreferencesRow] = [live]
+        folders = knowledge_bases()
+
+        def sync(*_) -> None:
+            self.setup.live = live.get_active()
+            if len(rows) > 1:
+                self.setup.hints_in = folders[rows[1].get_selected()]
+            self.quick_label.set_text(self.setup.describe())
+
+        if folders:
+            research = Adw.ComboRow(
+                title="Research in", model=Gtk.StringList.new([Path(f).name for f in folders])
+            )
+            if self.setup.hints_in in folders:
+                research.set_selected(folders.index(self.setup.hints_in))
+            live.bind_property("active", research, "sensitive", GObject.BindingFlags.SYNC_CREATE)
+            research.connect("notify::selected", sync)
+            rows.append(research)
+        live.connect("notify::active", sync)
+        return rows
 
     def _title(self) -> str:
         return self.title_row.get_text().strip() or "meeting"
@@ -445,6 +510,9 @@ class Window(Adw.ApplicationWindow):
         after.add(process)
         after.add(engine)
         after.add(fast)
+        during = Adw.PreferencesGroup(title="During the meeting")
+        for row in self._live_rows():
+            during.add(row)
 
         def start() -> None:
             self.setup.title = title.get_text().strip() or "meeting"
@@ -454,7 +522,9 @@ class Window(Adw.ApplicationWindow):
             self._start()
 
         return page(
-            "Ready", column(group, after, nav_buttons(self.nav.pop, "Start recording", start)), "ready"
+            "Ready",
+            column(group, after, during, nav_buttons(self.nav.pop, "Start recording", start)),
+            "ready",
         )
 
     # ---- recording
@@ -478,24 +548,22 @@ class Window(Adw.ApplicationWindow):
         GLib.timeout_add_seconds(1, self._tick)
 
     def _recording_page(self) -> Adw.NavigationPage:
-        self.clock = Gtk.Label(label="0:00")
+        self.clock = Gtk.Label(label="0:00", valign=Gtk.Align.CENTER)
         self.clock.add_css_class("title-1")
         self.clock.add_css_class("numeric")
-        self.status = Gtk.Label(label="Starting …", wrap=True)
+        self.status = Gtk.Label(label="Starting …", xalign=0, ellipsize=3)
         self.status.add_css_class("dim-label")
         self.banner = Adw.Banner()
         self.warnings: dict[str, str] = {}
         self.meters = {}
-        meter_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        roles = (
-            [("room", "Room microphone")]
-            if self.setup.room
-            else [("mic", "Your microphone"), ("system", "Call")]
-        )
+        meter_box = Gtk.Box(spacing=12, valign=Gtk.Align.CENTER)
+        roles = [("room", "Room")] if self.setup.room else [("mic", "You"), ("system", "Call")]
         for role, label in roles:
             self.meters[role] = Meter(label)
+            self.meters[role].set_size_request(90, -1)
             meter_box.append(self.meters[role])
         self.stop_button = pill("Stop", "destructive-action", self._stop)
+        self.stop_button.set_valign(Gtk.Align.CENTER)
         self.spinner = Gtk.Spinner(visible=False)
         self.log = Gtk.TextView(editable=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR)
         log_scroller = Gtk.ScrolledWindow(min_content_height=160, child=self.log)
@@ -506,34 +574,102 @@ class Window(Adw.ApplicationWindow):
         self.new_button = pill("New recording", "flat", self._home)
         self.new_button.set_visible(False)
         mic = mic_name(self.setup.mic, self.targets.get("mics", []))
-        body = column(
-            self.banner,
-            Gtk.Label(label=GLib.markup_escape_text(self.setup.title), css_classes=["title-3"]),
-            Gtk.Label(
-                label=f"{self.setup.describe()}\nMicrophone: {mic}",
-                wrap=True,
-                max_width_chars=60,
-                justify=Gtk.Justification.CENTER,
-                css_classes=["dim-label"],
-            ),
-            self.clock,
-            self.status,
-            meter_box,
-            self.stop_button,
-            self.spinner,
+        self.heard = Gtk.Label(
+            label="Listening …", xalign=0, wrap=True, lines=2, ellipsize=3, visible=self.setup.live
+        )
+        self.heard.add_css_class("dim-label")
+        self.hints = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
+        self.hints.set_placeholder(Gtk.Label(label="No hints yet", margin_top=12, margin_bottom=12))
+        self.hint_rows: dict[int, Gtk.ListBoxRow] = {}
+        self.hint_ages: list[tuple[float, int, Gtk.Label]] = []
+        self.live_dir = self.live_workdir = ""
+        hints_scroller = Gtk.ScrolledWindow(child=self.hints, visible=self.setup.live, vexpand=True)
+        title = Gtk.Label(label=self.setup.title, xalign=0, ellipsize=3, css_classes=["heading"])
+        title.set_tooltip_text(f"{self.setup.describe()}\nMicrophone: {mic}")
+        names = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
+        names.append(title)
+        names.append(self.status)
+        top = Gtk.Box(spacing=16)
+        for widget in (self.clock, names, meter_box, self.stop_button, self.spinner):
+            top.append(widget)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(body, f"set_margin_{side}")(12)
+        for widget in (
+            top,
+            hints_scroller,
+            self.heard,
             self.done_box,
             self.copy_button,
             self.new_button,
             self.log_expander,
-        )
-        nav_page = page("Recording", body, "recording")
+        ):
+            body.append(widget)
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.add_top_bar(self.banner)
+        view.set_content(body)
+        nav_page = Adw.NavigationPage(title="Recording", child=view, tag="recording")
         nav_page.set_can_pop(False)
         return nav_page
+
+    def _hint_row(self, event: dict) -> Gtk.ListBoxRow:
+        chip = Gtk.Label(label=event["kind"].upper(), valign=Gtk.Align.START)
+        chip.add_css_class("hint-chip")
+        chip.add_css_class(f"hint-{event['kind']}")
+        chip.set_size_request(118, -1)
+        headline = Gtk.Label(label=event["headline"] or event["text"], xalign=0, wrap=True)
+        headline.add_css_class("heading")
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+        text.append(headline)
+        if event["headline"] and event["text"]:
+            text.append(Gtk.Label(label=event["text"], xalign=0, wrap=True))
+        minutes, seconds = divmod(int(event["at"]), 60)
+        age = Gtk.Label(label="now", css_classes=["dim-label", "caption"])
+        age.set_tooltip_text(f"said at {minutes}:{seconds:02d}")
+        self.hint_ages.append((time.monotonic(), int(event["at"]), age))
+        source = Gtk.Button(
+            label=source_label(event["file"], event["date"]), css_classes=["flat", "hint-source"]
+        )
+        source.set_tooltip_text(event["source"])
+        path = source_path(event["file"], self.live_workdir)
+        source.set_sensitive(path is not None)
+        source.connect("clicked", lambda *_: self._open(path))
+        foot = Gtk.Box(spacing=6)
+        foot.append(age)
+        if event["replaces"]:
+            foot.append(Gtk.Label(label="· updated", css_classes=["dim-label", "caption"]))
+        foot.append(source)
+        foot.append(Gtk.Box(hexpand=True))
+        votes = {
+            vote: Gtk.ToggleButton(label=label, css_classes=["flat", "hint-vote"])
+            for vote, label in (("up", "👍"), ("down", "👎"))
+        }
+        votes["down"].set_group(votes["up"])
+        for button in votes.values():
+            button.connect("toggled", lambda *_: self._vote(event["id"], votes))
+            foot.append(button)
+        text.append(foot)
+        box = Gtk.Box(spacing=12, margin_top=8, margin_bottom=8, margin_start=12, margin_end=12)
+        box.append(chip)
+        box.append(text)
+        row = Gtk.ListBoxRow(child=box, activatable=False)
+        row.add_css_class("hint-new")
+        GLib.timeout_add_seconds(HINT_NEW_SECONDS, lambda: row.remove_css_class("hint-new") and False)
+        return row
+
+    def _vote(self, hint: int, votes: dict) -> None:
+        chosen = next((vote for vote, button in votes.items() if button.get_active()), "")
+        with (Path(self.live_dir) / "feedback.jsonl").open("a") as feedback:
+            feedback.write(json.dumps({"hint": hint, "vote": chosen}) + "\n")
 
     def _tick(self) -> bool:
         if self.state != "recording":
             return False
         self.seconds += 1
+        now = time.monotonic()
+        for shown, _at, label in self.hint_ages:
+            label.set_text(age_text(now - shown))
         h, rest = divmod(self.seconds, 3600)
         self.clock.set_text(f"{h}:{rest // 60:02d}:{rest % 60:02d}" if h else f"{rest // 60}:{rest % 60:02d}")
         return True
@@ -568,11 +704,23 @@ class Window(Adw.ApplicationWindow):
             self.warnings[event["kind"]] = event["message"]
             self.banner.set_title(GLib.markup_escape_text("\n".join(self.warnings.values())))
             self.banner.set_revealed(True)
+        elif kind == "transcript":
+            self.heard.set_text(f"{event['speaker']}: {event['text']}")
+        elif kind == "live":
+            self.live_dir, self.live_workdir = event["dir"], event["workdir"]
+        elif kind == "hint":
+            replaced = self.hint_rows.pop(event["replaces"], None)
+            if replaced:
+                self.hints.remove(replaced)
+            self.hint_rows[event["id"]] = self._hint_row(event)
+            self.hints.prepend(self.hint_rows[event["id"]])
         elif kind == "saved":
             self.saved_dir = event["dir"]
         elif kind == "processing":
             self.state = "processing"
             self.status.set_text("Transcribing …")
+            for _shown, at, label in self.hint_ages:
+                label.set_text(f"{at // 60}:{at % 60:02d}")
             self.stop_button.set_visible(False)
             for meter in self.meters.values():
                 meter.set_visible(False)
