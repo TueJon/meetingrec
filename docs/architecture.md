@@ -27,7 +27,8 @@
   s16le); `Transcriber` decodes new audio per tick and holds back a segment cut at the
   end of the chunk, `Hinter` runs two Claude CLI calls per look over the recent transcript (read-only
   tools, run in `live.workdir`, without user settings or hooks): one researches drafts,
-  one checks each draft against its source and the newest lines. Each look is a line in
+  one checks each draft against its source, the newest lines and the hints already shown, and may
+rewrite it, change its kind or park it for later. Each look is a line in
   `live/hint-log.jsonl`. `review` compares the hints with the final transcript after
   `full`. `replay` feeds a recorded meeting's WAVs instead.
 - `cloud_asr.py`: the `gemini` engine: Gemini Transcribe on Vertex AI over REST with a

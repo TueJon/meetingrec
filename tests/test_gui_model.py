@@ -134,3 +134,20 @@ def test_knowledge_bases_lists_existing_configured_folders(tmp_path):
     config.write_text(f'[live]\nworkdir = "{tmp_path}/notes"\nworkdirs = [{folders}]\n')
     assert gui_model.knowledge_bases(config) == [f"{tmp_path}/repo", f"{tmp_path}/notes"]
     assert gui_model.knowledge_bases(tmp_path / "missing.toml") == []
+
+
+def test_a_hint_shows_its_age_and_a_short_source(tmp_path):
+    assert [gui_model.age_text(s) for s in (2, 12.7, 59, 60, 185)] == [
+        "now",
+        "12 s ago",
+        "59 s ago",
+        "1 min ago",
+        "3 min ago",
+    ]
+    assert gui_model.source_label("knowledge/a.md:12 (Scope)", "2026-11-16") == "a.md:12 · 2026-11-16"
+    assert gui_model.source_label("somewhere", "unknown") == "somewhere"
+    (tmp_path / "knowledge").mkdir()
+    (tmp_path / "knowledge" / "a.md").write_text("x")
+    assert gui_model.source_path("knowledge/a.md:12", str(tmp_path)) == tmp_path / "knowledge" / "a.md"
+    assert gui_model.source_path("knowledge/b.md:1", str(tmp_path)) is None
+    assert gui_model.source_path("knowledge/a.md:12", "") is None

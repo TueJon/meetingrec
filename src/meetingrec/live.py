@@ -47,10 +47,12 @@ KINDS = ["answer", "ask", "mention", "contradiction", "remind"]
 CUE = re.compile(
     r"\?|\d|\b(tomorrow|today|tonight|next week|this week|monday|tuesday|wednesday|thursday|friday|"
     r"release[ds]?|deadline|due|ship(s|ped|ping)?|morgen|heute|nächste woche|diese woche|montag|"
-    r"dienstag|mittwoch|donnerstag|freitag|frist|bis wann)\b",
+    r"dienstag|mittwoch|donnerstag|freitag|frist|bis wann|not sure|need to check|do we have|"
+    r"nicht sicher|haben wir)\b",
     re.IGNORECASE,
 )
 SOURCE_LINE = re.compile(r"^(.+?):(\d+)")
+CUE_TIME = re.compile(r"^\[(\d+):(\d\d)\]")
 EXCERPT_LINES_BEFORE = 5
 EXCERPT_LINES_AFTER = 10
 EXCERPT_LINE_CHARS = 1500
@@ -68,7 +70,16 @@ HINT_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "kind": {"type": "string", "enum": KINDS},
-                    "text": {"type": "string"},
+                    "headline": {"type": "string", "description": "the point itself, at most 8 words"},
+                    "text": {"type": "string", "description": "one line of detail, or empty"},
+                    "cue": {
+                        "type": "string",
+                        "description": "the transcript line the hint responds to, copied with its [mm:ss]",
+                    },
+                    "replaces": {
+                        "type": "integer",
+                        "description": "number of the earlier hint this one updates, 0 for a new one",
+                    },
                     "source": {"type": "string", "description": "file path and line backing the hint"},
                     "source_date": {
                         "type": "string",
@@ -76,7 +87,7 @@ HINT_SCHEMA = {
                     },
                     "quote": {"type": "string", "description": "the sentence in the source, copied verbatim"},
                 },
-                "required": ["kind", "text", "source", "source_date", "quote"],
+                "required": ["kind", "headline", "text", "cue", "replaces", "source", "source_date", "quote"],
                 "additionalProperties": False,
             },
         },
@@ -105,10 +116,13 @@ VERIFY_SCHEMA = {
                 "properties": {
                     "index": {"type": "integer"},
                     "keep": {"type": "boolean"},
+                    "later": {"type": "boolean", "description": "right, but its topic has not come up yet"},
                     "reason": {"type": "string"},
-                    "text": {"type": "string", "description": "the hint as it should be shown"},
+                    "kind": {"type": "string", "enum": KINDS},
+                    "headline": {"type": "string", "description": "the headline as it should be shown"},
+                    "text": {"type": "string", "description": "the detail line as it should be shown"},
                 },
-                "required": ["index", "keep", "reason", "text"],
+                "required": ["index", "keep", "later", "reason", "kind", "headline", "text"],
                 "additionalProperties": False,
             },
         }
@@ -128,12 +142,16 @@ First go through the new lines for everything the records could settle: a releas
 date, a ticket or merge request, a number, who does what, a question nobody answered, and
 above all what {me} states, confirms or promises. Look each of them up. Answering without
 a lookup is only right when the new lines are small talk.
+When speakers disagree, guess, or say they must check how something works, that is the most
+valuable lookup: search for the answer itself (the rule, table or acceptance criteria that
+settles it), not only for the topic.
 
 Draft a hint for {name} only when it helps right now:
 - answer: a question was asked that the records answer
 - mention: a fact {name} should bring up
 - ask: something {name} should ask or clarify before the topic closes
-- contradiction: something said contradicts the records
+- contradiction: a speaker stated something as a fact and the records say otherwise about
+  the same thing. A proposal, a wording idea, a comparison or a guess is not such a claim
 - remind: an open item with these people that has not come up yet
 
 No hint is the normal answer. Rules:
@@ -147,10 +165,25 @@ No hint is the normal answer. Rules:
   agent, a template or a token can belong to unrelated features.
 - Two records that disagree with each other, or a record the meeting has just made
   outdated, are not hints. List them under record_fixes for after the meeting.
-- Never repeat or rephrase an earlier hint or a rejected draft.
-- Each hint at most 25 words, in the language the meeting is held in (German meeting:
-  German hint), concrete (names, numbers, dates). source is the file path and line, quote
-  the sentence there that the hint rests on, copied verbatim.
+- Say what the record is: what runs today, a draft or branch, a requirement, a proposal.
+  Keep words like draft, proposed, planned, not merged. Never present a requirement or a
+  draft as what runs today.
+- A name the speech recognition may have garbled is matched to the closest name in the
+  records first. That the records hold nothing is never a hint.
+- A hint belongs to what is on the table now. cue is the transcript line that makes it
+  relevant, copied with its [mm:ss]. Without such a line there is no hint.
+- One card per point. Never repeat or rephrase an earlier hint or a rejected draft. A draft
+  that rests on the same record line as an earlier hint is allowed only when it adds
+  something new: then replaces is that hint's number and the draft is the full updated
+  hint. Otherwise replaces is 0.
+- A parked draft was right but too early. Draft it again once its topic comes up.
+- {name} reads the hint at a glance while talking. headline is the point itself in at most
+  8 words: the answer, the question to ask, the fact. No lead-in such as "Records say".
+  text is one line of at most 20 words with the detail that backs it (names, numbers,
+  dates), or empty when the headline says it all. Ticket, merge request and flag names only
+  when {name} needs them to act. Both in the language the meeting is held in (German
+  meeting: German hint). source is the file path and line, quote the sentence there that
+  the hint rests on, copied verbatim.
 
 Meeting: {title}
 
@@ -159,6 +192,9 @@ Earlier hints:
 
 Rejected drafts:
 {rejected}
+
+Parked drafts:
+{parked}
 
 Transcript (lines after ">>> new" are new since your last look):
 {transcript}
@@ -180,12 +216,27 @@ files only when you need more, for example to look for a newer record. keep is f
   are still searching for what the record holds, the draft is on time
 - its source is a note about this very meeting
 - it would not change what {name} says or does in the next minute
+- it rests on the same record line as a hint already shown and adds nothing new
+- it presents a requirement, a draft or a branch as what runs today, or its source covers
+  another case than the one discussed, and the shown text cannot be corrected to say so
+- it says a speaker stated something the transcript does not contain, or only that the
+  records hold nothing
 
-Otherwise keep is true. text is the hint as it should be shown: at most 25 words, in the
-language of the meeting, corrected where the source is more precise. reason is one short
-sentence. Return one verdict per draft, with its index.
+A speaker who is unsure ("I think", "I need to check") has not settled a question: a draft
+that answers it from the records is on time. later is true when the draft is right but its
+topic has not come up yet; it is then held back and offered again.
+
+Otherwise keep is true. kind is the kind to show: contradiction only when a speaker stated
+the opposite as a fact about the same thing, else mention or ask. headline (at most 8
+words, the point itself, no lead-in) and text (one detail line of at most 20 words, or
+empty) are the hint as it should be shown, in the language of the meeting, corrected where
+the source is more precise and naming a draft, requirement or proposal as such. reason is
+one short sentence. Return one verdict per draft, with its index.
 
 Meeting: {title}
+
+Hints already shown:
+{earlier}
 
 Drafts:
 {drafts}
@@ -201,6 +252,8 @@ researched in. Read these files in {directory}:
 - live/hints.md: the hints that were shown, with the transcript time they refer to
 - live/hint-log.jsonl: every look of the hint model: drafts, verdicts, tool calls, seconds, lag
 - live/record-fixes.md: notes the hint model found to disagree (may be missing)
+- live/feedback.jsonl: the user's own thumbs up or down per hint number (may be missing);
+  the last line per hint counts, and a vote outranks your judgment of whether it was useful
 
 Check the claims yourself against the records and code; do not trust the hints. Write
 Markdown with exactly these sections, short and concrete:
@@ -327,6 +380,9 @@ class Hint:
     text: str
     source: str
     date: str = ""
+    headline: str = ""
+    number: int = 0
+    replaces: int = 0
 
     @property
     def cited(self) -> str:
@@ -334,7 +390,9 @@ class Hint:
 
     def render(self) -> str:
         m, s = divmod(int(self.at), 60)
-        return f"[{m:02d}:{s:02d}] {self.kind.upper()}: {self.text} ({self.cited})"
+        body = " — ".join(part for part in (self.headline, self.text) if part)
+        update = f" (updates #{self.replaces})" if self.replaces else ""
+        return f"[{m:02d}:{s:02d}] {self.kind.upper()}: {body} ({self.cited}){update}"
 
 
 @dataclass
@@ -448,6 +506,8 @@ class Hinter:
     lines: list[Line] = field(default_factory=list)
     hints: list[Hint] = field(default_factory=list)
     rejected: list[str] = field(default_factory=list)
+    parked: list[str] = field(default_factory=list)
+    replaced: set[int] = field(default_factory=set)
     fixes: list[str] = field(default_factory=list)
     checking: list[str] = field(default_factory=list)
     tail: list[Line] = field(default_factory=list)
@@ -495,23 +555,31 @@ class Hinter:
             "today": dt.date.today().strftime("%A, %Y-%m-%d"),
         }
 
+    def _earlier(self) -> str:
+        shown = [h for h in self.hints if h.number not in self.replaced]
+        return "\n".join(f"#{h.number} {h.render()}" for h in shown) or "(none)"
+
     def prompt(self) -> str:
         return PROMPT.format(
             **self._frame(),
-            earlier="\n".join(h.render() for h in self.hints) or "(none)",
+            earlier=self._earlier(),
             rejected="\n".join(f"- {text}" for text in self.rejected + self.checking) or "(none)",
+            parked="\n".join(f"- {text}" for text in self.parked) or "(none)",
             transcript=self._transcript(mark=True),
         )
 
     def verify_prompt(self, drafts: list[dict]) -> str:
         rendered = [
-            f"{i}. {d['kind'].upper()}: {d['text']}\n   source: {d['source']} ({d['source_date']})\n"
-            f"   quote: {d['quote']}\n{excerpt(d['source'], self.workdir or Path.cwd())}"
+            f"{i}. {d['kind'].upper()}: {_body(d)}\n   source: {d['source']} ({d['source_date']})\n"
+            f"   quote: {d['quote']}\n   cue: {d.get('cue', '')}\n"
+            f"{excerpt(d['source'], self.workdir or Path.cwd())}"
             for i, d in enumerate(drafts)
         ]
         with self.lock:
-            transcript = self._transcript(mark=False)
-        return VERIFY_PROMPT.format(**self._frame(), drafts="\n".join(rendered), transcript=transcript)
+            transcript, earlier = self._transcript(mark=False), self._earlier()
+        return VERIFY_PROMPT.format(
+            **self._frame(), drafts="\n".join(rendered), earlier=earlier, transcript=transcript
+        )
 
     def research(self) -> tuple[list[dict], list[str], dict]:
         """Draft hints for the newest lines: the drafts, new record fixes and the log entry."""
@@ -544,14 +612,14 @@ class Hinter:
         with self.lock:
             fixes = [fix for fix in found if fix not in self.fixes]
             self.fixes += fixes
-            self.checking += [draft["text"].strip() for draft in drafts]
+            self.checking += [_body(draft) for draft in drafts]
         entry |= {"research": call.log(), "drafts": drafts, "record_fixes": fixes}
         return drafts, fixes, entry
 
     def check(self, drafts: list[dict], entry: dict) -> list[Hint]:
         """Check the drafts against their sources and the newest lines; returns the hints to show."""
         live = self.cfg.live
-        kept, dropped = drafts, []
+        kept, dropped, parked = drafts, [], []
         try:
             if drafts and live.verify_model:
                 call = self.runner(
@@ -563,26 +631,38 @@ class Hinter:
                 verdicts = {v["index"]: v for v in call.output.get("verdicts", [])}
                 entry["verify"] = {**call.log(), "verdicts": call.output.get("verdicts", [])}
                 kept = [
-                    {**draft, "text": verdicts[i]["text"].strip() or draft["text"]}
+                    {**draft, **{key: value for key, value in _shown(verdicts[i]).items() if value}}
                     for i, draft in enumerate(drafts)
                     if i in verdicts and verdicts[i]["keep"]
                 ]
-                dropped = [
-                    d["text"].strip() for i, d in enumerate(drafts) if not verdicts.get(i, {}).get("keep")
-                ]
+                lost = [(i, d) for i, d in enumerate(drafts) if not verdicts.get(i, {}).get("keep")]
+                parked = [_body(d) for i, d in lost if verdicts.get(i, {}).get("later")]
+                dropped = [_body(d) for i, d in lost if not verdicts.get(i, {}).get("later")]
         except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
             entry["error"] = str(exc)
-            kept, dropped = [], [draft["text"].strip() for draft in drafts]
-        new = [
-            Hint(entry["at"], h["kind"], h["text"].strip(), h["source"].strip(), h["source_date"].strip())
-            for h in kept
-        ]
+            kept = []
         with self.lock:
-            self.checking = [
-                text for text in self.checking if text not in {d["text"].strip() for d in drafts}
-            ]
+            new = []
+            for h in kept:
+                replaces = h.get("replaces", 0)
+                known = any(hint.number == replaces for hint in self.hints) and replaces not in self.replaced
+                hint = Hint(
+                    min(_cue_seconds(h.get("cue", ""), entry["at"]), entry["at"]),
+                    h["kind"],
+                    h["text"].strip(),
+                    h["source"].strip(),
+                    h["source_date"].strip(),
+                    h.get("headline", "").strip(),
+                    len(self.hints) + 1,
+                    replaces if known else 0,
+                )
+                if hint.replaces:
+                    self.replaced.add(hint.replaces)
+                self.hints.append(hint)
+                new.append(hint)
+            self.checking = [text for text in self.checking if text not in {_body(d) for d in drafts}]
             self.rejected += dropped
-            self.hints += new
+            self.parked = [text for text in self.parked + parked if text not in {_body(h) for h in kept}]
         entry["shown"] = [hint.render() for hint in new]
         return new
 
@@ -592,9 +672,25 @@ class Hinter:
         return ([] if "error" in entry else self.check(drafts, entry)), fixes, entry
 
 
+def _body(draft: dict) -> str:
+    return " — ".join(part.strip() for part in (draft.get("headline", ""), draft["text"]) if part.strip())
+
+
+def _shown(verdict: dict) -> dict:
+    return {key: verdict.get(key, "").strip() for key in ("kind", "headline", "text")}
+
+
+def _cue_seconds(cue: str, fallback: float) -> float:
+    match = CUE_TIME.match(cue.strip())
+    return int(match[1]) * 60 + int(match[2]) if match else fallback
+
+
 def _notify(hint: Hint) -> None:
     if shutil.which("notify-send"):
-        subprocess.run(["notify-send", "-a", "meetingrec", f"Hint: {hint.kind}", hint.text], check=False)
+        subprocess.run(
+            ["notify-send", "-a", "meetingrec", f"Hint: {hint.kind}", hint.headline or hint.text],
+            check=False,
+        )
 
 
 def run(
@@ -618,13 +714,21 @@ def run(
     )
     workdir = Path(cfg.live.workdir).expanduser() if cfg.live.workdir else Path.cwd()
     hinter = Hinter(cfg, title, me, workdir)
-    emit({"event": "live", "workdir": str(workdir), "model": cfg.live.model or "default"})
+    emit(
+        {
+            "event": "live",
+            "workdir": str(workdir),
+            "dir": str(directory),
+            "model": cfg.live.model or "default",
+        }
+    )
 
     writing = threading.Lock()
 
     def finish(drafts: list[dict], entry: dict, started: float) -> None:
         new = hinter.check(drafts, entry) if "error" not in entry else []
-        entry["lag"] = round(time.monotonic() - began - entry["heard"], 1)
+        entry["shown_at"] = round(time.monotonic() - began, 1)
+        entry["lag"] = round(entry["shown_at"] - entry["heard"], 1)
         with writing:
             with (directory / "hint-log.jsonl").open("a") as log:
                 log.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -639,9 +743,14 @@ def run(
                 {
                     "event": "hint",
                     "at": round(hint.at, 1),
+                    "id": hint.number,
+                    "replaces": hint.replaces,
                     "kind": hint.kind,
+                    "headline": hint.headline,
                     "text": hint.text,
                     "source": hint.cited,
+                    "file": hint.source,
+                    "date": hint.date,
                     "seconds": round(time.monotonic() - started, 1),
                 }
             )

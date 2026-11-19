@@ -131,13 +131,19 @@ researches read-only in the knowledge base you name (notes, a repo), and
 drafts a hint only when it helps right now: an answer, something to mention, a question to
 ask, a contradiction with your notes or an open item. A second model (`verify_model`)
 opens the source of every draft and drops what is wrong, outdated or already settled in
-the call. Everything lands in `live/` in the meeting directory:
+the call; a draft that is right but too early is held back until its topic comes up. A hint
+is a headline of a few words plus one line of detail, and a hint on a point already shown
+replaces that card. The window shows them newest first, with the kind as a coloured label,
+the source as a button that opens the note, and thumbs up/down. Everything lands in `live/`
+in the meeting directory:
 
 - `transcript.txt` and `hints.md`: the running transcript and the hints that were shown
   (`--events` emits them as `transcript` and `hint` events)
 - `record-fixes.md`: notes that disagree with each other or that the meeting made outdated
 - `hint-log.jsonl`: every look with its drafts, verdicts, lookups, seconds and cost; `lag`
-  is the time from the newest audio the look had read to its result
+  is the time from the newest audio the look had read to its result, `shown_at` the call
+  time the hints appeared
+- `feedback.jsonl`: your thumbs up/down per hint number (the last line per hint counts)
 - `review.md`: after `full`, a check of the hints against the final transcript: which
   were useful, late or wrong, and what the notes held that no hint brought up
 

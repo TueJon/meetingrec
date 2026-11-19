@@ -225,3 +225,27 @@ def entry_title(entry: dict) -> str:
 
 def db_fraction(db: float) -> float:
     return min(1.0, max(0.0, (db - METER_FLOOR_DB) / -METER_FLOOR_DB))
+
+
+_SOURCE = re.compile(r"^(.+?):(\d+)")
+
+
+def age_text(seconds: float) -> str:
+    """How long ago a hint appeared, for a glance: `now`, `12 s ago`, `3 min ago`."""
+    if seconds < 5:
+        return "now"
+    return f"{int(seconds)} s ago" if seconds < 60 else f"{int(seconds // 60)} min ago"
+
+
+def source_label(source: str, date: str) -> str:
+    """`knowledge/features/a.md:12 (Scope)` and its date as `a.md:12 · 2026-11-16`."""
+    match = _SOURCE.match(source)
+    name = f"{Path(match[1]).name}:{match[2]}" if match else source
+    return f"{name} · {date}" if date and date != "unknown" else name
+
+
+def source_path(source: str, workdir: str) -> Path | None:
+    """The file a hint cites, when it exists under the folder the hints were researched in."""
+    match = _SOURCE.match(source)
+    path = Path(workdir) / (match[1] if match else source)
+    return path if workdir and path.is_file() else None

@@ -105,6 +105,9 @@ def test_a_question_or_date_brings_the_next_look_forward():
     h.add([Line(5, "Remote", "Is it released tomorrow?")])
     assert h.due(3) == ""
     assert h.due(10) == "cue"
+    h.seen = len(h.lines)
+    h.add([Line(9, "Me", "I need to check how it works")])
+    assert h.due(10) == "cue"
 
 
 def test_the_unfinished_last_segment_is_read_right_away_and_only_once():
@@ -197,6 +200,82 @@ def test_look_shows_only_the_drafts_the_check_keeps():
     assert "- old plan" in h.prompt()
 
 
+def _draft(**fields):
+    return {
+        "kind": "mention",
+        "replaces": 0,
+        "source": "a.md:3",
+        "source_date": "2026-11-17",
+        "quote": "q",
+    } | fields
+
+
+def _verdict(index, **fields):
+    return {
+        "index": index,
+        "keep": True,
+        "later": False,
+        "reason": "",
+        "kind": "",
+        "headline": "",
+        "text": "",
+    } | fields
+
+
+def test_a_hint_has_a_headline_and_carries_the_time_of_its_cue():
+    draft = _draft(
+        kind="contradiction", headline="Ships 19 Nov", text="not 12 Nov", cue="[00:40] Remote: ships 12th"
+    )
+    claude = FakeClaude(
+        {"hints": [draft], "record_fixes": []},
+        {"verdicts": [_verdict(0, kind="mention", headline="Ships Thu 19 Nov")]},
+    )
+    h = Hinter(Config(), "call", "Me", workdir=None, runner=claude)
+    h.add([Line(40, "Remote", "ships 12th"), Line(61, "Remote", "right?")])
+    (hint,), _, _ = h.look()
+    assert hint.render() == "[00:40] MENTION: Ships Thu 19 Nov — not 12 Nov (a.md:3, 2026-11-17)"
+    assert "cue: [00:40] Remote: ships 12th" in claude.prompts[1]
+
+
+def test_an_update_replaces_the_earlier_hint_on_the_same_point():
+    first = _draft(headline="Reviewer needs an account", text="no MFA", cue="")
+    update = _draft(
+        headline="Reviewer account: no MFA, flag on", text="trial ends after 30 days", cue="", replaces=1
+    )
+    stray = _draft(headline="Other", text="", cue="", replaces=7)
+    claude = FakeClaude(
+        {"hints": [first], "record_fixes": []},
+        {"verdicts": [_verdict(0)]},
+        {"hints": [update, stray], "record_fixes": []},
+        {"verdicts": [_verdict(0), _verdict(1)]},
+    )
+    h = Hinter(Config(), "call", "Me", workdir=None, runner=claude)
+    h.add([Line(0, "Remote", "hello")])
+    h.look()
+    h.add([Line(30, "Remote", "and the trial?")])
+    hints, _, entry = h.look()
+    assert [(hint.number, hint.replaces) for hint in hints] == [(2, 1), (3, 0)]
+    assert entry["shown"][0].endswith("(updates #1)")
+    assert "#1 " in claude.prompts[2] and "#1 " in claude.prompts[3]
+    assert "#1 " not in h.prompt() and "#2 [00:30] MENTION: Reviewer account" in h.prompt()
+
+
+def test_a_draft_that_comes_too_early_is_parked_until_it_is_shown():
+    draft = _draft(headline="Privacy policy needs a retention section", text="", cue="")
+    claude = FakeClaude(
+        {"hints": [draft], "record_fixes": []},
+        {"verdicts": [_verdict(0, keep=False, later=True)]},
+        {"hints": [draft], "record_fixes": []},
+        {"verdicts": [_verdict(0)]},
+    )
+    h = Hinter(Config(), "call", "Me", workdir=None, runner=claude)
+    h.add([Line(0, "Remote", "hello")])
+    assert h.look()[0] == [] and h.rejected == []
+    assert "Parked drafts:\n- Privacy policy needs a retention section" in h.prompt()
+    h.add([Line(30, "Remote", "now legal")])
+    assert len(h.look()[0]) == 1 and h.parked == []
+
+
 def test_the_check_gets_the_lines_around_the_source(tmp_path):
     (tmp_path / "a.md").write_text("\n".join(f"row {n}" for n in range(1, 40)))
     assert live.excerpt("a.md:20 (Release scope)", tmp_path).splitlines()[0] == "   15: row 15"
@@ -213,6 +292,7 @@ def test_look_shows_nothing_when_the_check_fails():
     h.add([Line(0, "Remote", "hello")])
     hints, fixes, entry = h.look()
     assert hints == [] and entry["error"] == "overloaded" and entry["drafts"] == DRAFTS
+    assert h.rejected == [] and h.checking == []
 
 
 def test_look_without_a_verify_model_shows_the_drafts():
