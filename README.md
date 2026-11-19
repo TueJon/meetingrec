@@ -131,7 +131,9 @@ researches read-only in the knowledge base you name (notes, a repo), and
 drafts a hint only when it helps right now: an answer, something to mention, a question to
 ask, a contradiction with your notes or an open item. A second model (`verify_model`)
 opens the source of every draft and drops what is wrong, outdated or already settled in
-the call; a draft that is right but too early is held back until its topic comes up. A hint
+the call or overruled by a newer note on the same ticket; a draft that is right but too early
+is held back until its topic comes up. An answer that quotes its source word for word shows
+at once, marked as checking, and goes away again if the check drops it. A hint
 is a headline of a few words plus one line of detail, and a hint on a point already shown
 replaces that card. The window shows them newest first, with the kind as a coloured label,
 the source as a button that opens the note, and thumbs up/down. Everything lands in `live/`

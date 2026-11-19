@@ -53,6 +53,11 @@ CUE = re.compile(
 )
 SOURCE_LINE = re.compile(r"^(.+?):(\d+)")
 CUE_TIME = re.compile(r"^\[(\d+):(\d\d)\]")
+RECORD_ID = re.compile(r"![0-9]{3,}|\b[A-Z]{2,}-[0-9]+\b")
+MENTION_IDS = 3
+MENTION_LINES = 20
+MENTION_LINE_CHARS = 240
+MENTION_TIMEOUT_S = 3
 EXCERPT_LINES_BEFORE = 5
 EXCERPT_LINES_AFTER = 10
 EXCERPT_LINE_CHARS = 1500
@@ -173,9 +178,9 @@ No hint is the normal answer. Rules:
 - A hint belongs to what is on the table now. cue is the transcript line that makes it
   relevant, copied with its [mm:ss]. Without such a line there is no hint.
 - One card per point. Never repeat or rephrase an earlier hint or a rejected draft. A draft
-  that rests on the same record line as an earlier hint is allowed only when it adds
-  something new: then replaces is that hint's number and the draft is the full updated
-  hint. Otherwise replaces is 0.
+  on a point an earlier hint already made, whatever record it rests on, is allowed only
+  when it adds something new: then replaces is that hint's number and the draft is the
+  full updated hint. Otherwise replaces is 0.
 - A parked draft was right but too early. Draft it again once its topic comes up.
 - {name} reads the hint at a glance while talking. headline is the point itself in at most
   8 words: the answer, the question to ask, the fact. No lead-in such as "Records say".
@@ -216,7 +221,10 @@ files only when you need more, for example to look for a newer record. keep is f
   are still searching for what the record holds, the draft is on time
 - its source is a note about this very meeting
 - it would not change what {name} says or does in the next minute
-- it rests on the same record line as a hint already shown and adds nothing new
+- it makes the point of a hint already shown and adds nothing new. When it adds something
+  and its replaces is 0, keep it only if it stands as a card of its own
+- a line listed under "also" is newer than its source and says something else about the
+  same ticket or merge request
 - it presents a requirement, a draft or a branch as what runs today, or its source covers
   another case than the one discussed, and the shown text cannot be corrected to say so
 - it says a speaker stated something the transcript does not contain, or only that the
@@ -226,12 +234,12 @@ A speaker who is unsure ("I think", "I need to check") has not settled a questio
 that answers it from the records is on time. later is true when the draft is right but its
 topic has not come up yet; it is then held back and offered again.
 
-Otherwise keep is true. kind is the kind to show: contradiction only when a speaker stated
-the opposite as a fact about the same thing, else mention or ask. headline (at most 8
-words, the point itself, no lead-in) and text (one detail line of at most 20 words, or
-empty) are the hint as it should be shown, in the language of the meeting, corrected where
-the source is more precise and naming a draft, requirement or proposal as such. reason is
-one short sentence. Return one verdict per draft, with its index.
+Otherwise keep is true. kind is the draft's kind, except for a contradiction where no
+speaker stated the opposite as a fact about the same thing: that becomes mention or ask.
+headline (at most 8 words, count them; the point itself, no lead-in) and text (one detail
+line of at most 20 words, or empty) are the hint as it should be shown, in the language of
+the meeting, corrected where the source is more precise and naming a draft, requirement or
+proposal as such. reason is one short sentence. Return one verdict per draft, with its index.
 
 Meeting: {title}
 
@@ -407,21 +415,58 @@ class Call:
         return {"seconds": self.seconds, "cost": round(self.cost, 4), "tools": self.tools}
 
 
-def excerpt(source: str, workdir: Path) -> str:
-    """The lines around a `path:line` source, so the check needs no lookup for them."""
+def _source_rows(source: str, workdir: Path) -> tuple[list[str], int]:
     match = SOURCE_LINE.match(source.strip())
     if not match:
-        return ""
+        return [], 0
     path = Path(match[1]).expanduser()
     try:
         rows = (path if path.is_absolute() else workdir / path).read_text(errors="replace").splitlines()
     except OSError:
+        return [], 0
+    return rows, int(match[2])
+
+
+def excerpt(source: str, workdir: Path) -> str:
+    """The lines around a `path:line` source, so the check needs no lookup for them."""
+    rows, line = _source_rows(source, workdir)
+    if not rows:
         return ""
-    first = max(int(match[2]) - 1 - EXCERPT_LINES_BEFORE, 0)
+    first = max(line - 1 - EXCERPT_LINES_BEFORE, 0)
     return "\n".join(
         f"   {number}: {row[:EXCERPT_LINE_CHARS]}"
-        for number, row in enumerate(rows[first : int(match[2]) + EXCERPT_LINES_AFTER], first + 1)
+        for number, row in enumerate(rows[first : line + EXCERPT_LINES_AFTER], first + 1)
     )
+
+
+def quoted(draft: dict, workdir: Path) -> bool:
+    """Whether the draft's quote stands word for word in its source."""
+    rows, _ = _source_rows(draft["source"], workdir)
+    quote = " ".join(draft["quote"].split())
+    return bool(quote) and quote in " ".join(" ".join(rows).split())
+
+
+def mentions(draft: dict, workdir: Path) -> str:
+    """Other lines in the notes naming a draft's tickets and merge requests; a newer one may overrule it."""
+    ids = sorted(set(RECORD_ID.findall(f"{_body(draft)} {draft['quote']}")))[:MENTION_IDS]
+    if not ids:
+        return ""
+    cmd = ["grep", "-rnF", "--include=*.md", "--exclude-dir=.git", "--exclude-dir=node_modules"]
+    try:
+        found = subprocess.run(
+            [*cmd, *(arg for name in ids for arg in ("-e", name)), "."],
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=MENTION_TIMEOUT_S,
+        ).stdout.splitlines()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    cited = SOURCE_LINE.match(draft["source"].strip())
+    own = f"./{cited[1]}:{cited[2]}:" if cited else ""
+    rows = [row[2:][:MENTION_LINE_CHARS] for row in found if not (own and row.startswith(own))]
+    return "\n".join(f"   also: {row}" for row in rows[:MENTION_LINES])
 
 
 def claude_command(
@@ -515,6 +560,7 @@ class Hinter:
     heard: float = 0.0
     seen: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
+    checks: threading.Lock = field(default_factory=threading.Lock)
 
     def add(self, lines: list[Line], tail: list[Line] = (), heard: float = 0.0) -> None:
         with self.lock:
@@ -572,7 +618,7 @@ class Hinter:
         rendered = [
             f"{i}. {d['kind'].upper()}: {_body(d)}\n   source: {d['source']} ({d['source_date']})\n"
             f"   quote: {d['quote']}\n   cue: {d.get('cue', '')}\n"
-            f"{excerpt(d['source'], self.workdir or Path.cwd())}"
+            f"{excerpt(d['source'], self.workdir or Path.cwd())}\n{mentions(d, self.workdir or Path.cwd())}"
             for i, d in enumerate(drafts)
         ]
         with self.lock:
@@ -617,7 +663,14 @@ class Hinter:
         return drafts, fixes, entry
 
     def check(self, drafts: list[dict], entry: dict) -> list[Hint]:
-        """Check the drafts against their sources and the newest lines; returns the hints to show."""
+        """Check the drafts against their sources and the newest lines; returns the hints to show.
+
+        One check at a time, so each sees the hints the one before it let through.
+        """
+        with self.checks:
+            return self._check(drafts, entry)
+
+    def _check(self, drafts: list[dict], entry: dict) -> list[Hint]:
         live = self.cfg.live
         kept, dropped, parked = drafts, [], []
         try:
@@ -631,7 +684,7 @@ class Hinter:
                 verdicts = {v["index"]: v for v in call.output.get("verdicts", [])}
                 entry["verify"] = {**call.log(), "verdicts": call.output.get("verdicts", [])}
                 kept = [
-                    {**draft, **{key: value for key, value in _shown(verdicts[i]).items() if value}}
+                    {**draft, **{key: value for key, value in _shown(verdicts[i], draft).items() if value}}
                     for i, draft in enumerate(drafts)
                     if i in verdicts and verdicts[i]["keep"]
                 ]
@@ -676,8 +729,9 @@ def _body(draft: dict) -> str:
     return " — ".join(part.strip() for part in (draft.get("headline", ""), draft["text"]) if part.strip())
 
 
-def _shown(verdict: dict) -> dict:
-    return {key: verdict.get(key, "").strip() for key in ("kind", "headline", "text")}
+def _shown(verdict: dict, draft: dict) -> dict:
+    keys = ("kind", "headline", "text") if draft["kind"] == "contradiction" else ("headline", "text")
+    return {key: verdict.get(key, "").strip() for key in keys}
 
 
 def _cue_seconds(cue: str, fallback: float) -> float:
@@ -726,7 +780,28 @@ def run(
     writing = threading.Lock()
 
     def finish(drafts: list[dict], entry: dict, started: float) -> None:
+        previews = [
+            {
+                "event": "hint",
+                "id": f"draft-{entry['at']}-{i}",
+                "pending": True,
+                "replaces": 0,
+                "at": round(_cue_seconds(draft["cue"], entry["at"]), 1),
+                "kind": draft["kind"],
+                "headline": draft["headline"].strip(),
+                "text": draft["text"].strip(),
+                "source": draft["source"].strip(),
+                "file": draft["source"].strip(),
+                "date": draft["source_date"].strip(),
+            }
+            for i, draft in enumerate(drafts)
+            if cfg.live.verify_model and draft["kind"] == "answer" and quoted(draft, workdir)
+        ]
+        for preview in previews:
+            emit(preview)
         new = hinter.check(drafts, entry) if "error" not in entry else []
+        for preview in previews:
+            emit({"event": "hint-checked", "id": preview["id"]})
         entry["shown_at"] = round(time.monotonic() - began, 1)
         entry["lag"] = round(entry["shown_at"] - entry["heard"], 1)
         with writing:
@@ -744,6 +819,7 @@ def run(
                     "event": "hint",
                     "at": round(hint.at, 1),
                     "id": hint.number,
+                    "pending": False,
                     "replaces": hint.replaces,
                     "kind": hint.kind,
                     "headline": hint.headline,

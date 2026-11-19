@@ -286,6 +286,26 @@ def test_the_check_gets_the_lines_around_the_source(tmp_path):
     assert "   3: row 3" in h.verify_prompt(DRAFTS[:1])
 
 
+def test_the_check_gets_other_lines_naming_the_same_ticket(tmp_path):
+    (tmp_path / "a.md").write_text("one\ntwo\nMR !4711 is ready\n")
+    (tmp_path / "b.md").write_text("2026-11-17: !4711 closed unmerged\nABC-12 is unrelated\n")
+    draft = _draft(headline="!4711 is ready", text="", quote="MR !4711 is ready")
+    assert live.mentions(draft, tmp_path) == "   also: b.md:1:2026-11-17: !4711 closed unmerged"
+    assert live.mentions(_draft(headline="no ticket", text="", quote="q"), tmp_path) == ""
+    assert live.quoted(draft, tmp_path) and not live.quoted(draft | {"quote": "MR !4711 is merged"}, tmp_path)
+    h = Hinter(Config(), "call", "Me", workdir=tmp_path)
+    h.add([Line(0, "Remote", "hello")])
+    assert "also: b.md:1:" in h.verify_prompt([draft])
+
+
+def test_the_check_changes_the_kind_of_a_contradiction_only():
+    drafts = [_draft(kind="ask", headline="Who submits?", text="", cue="")]
+    claude = FakeClaude({"hints": drafts, "record_fixes": []}, {"verdicts": [_verdict(0, kind="mention")]})
+    h = Hinter(Config(), "call", "Me", workdir=None, runner=claude)
+    h.add([Line(0, "Remote", "hello")])
+    assert h.look()[0][0].kind == "ask"
+
+
 def test_look_shows_nothing_when_the_check_fails():
     claude = FakeClaude({"hints": DRAFTS, "record_fixes": []}, RuntimeError("overloaded"))
     h = Hinter(Config(), "call", "Me", workdir=None, runner=claude)

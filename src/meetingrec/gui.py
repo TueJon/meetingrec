@@ -637,8 +637,9 @@ class Window(Adw.ApplicationWindow):
         source.connect("clicked", lambda *_: self._open(path))
         foot = Gtk.Box(spacing=6)
         foot.append(age)
-        if event["replaces"]:
-            foot.append(Gtk.Label(label="· updated", css_classes=["dim-label", "caption"]))
+        for shown, note in ((event["replaces"], "· updated"), (event["pending"], "· checking …")):
+            if shown:
+                foot.append(Gtk.Label(label=note, css_classes=["dim-label", "caption"]))
         foot.append(source)
         foot.append(Gtk.Box(hexpand=True))
         votes = {
@@ -648,6 +649,7 @@ class Window(Adw.ApplicationWindow):
         votes["down"].set_group(votes["up"])
         for button in votes.values():
             button.connect("toggled", lambda *_: self._vote(event["id"], votes))
+            button.set_visible(not event["pending"])
             foot.append(button)
         text.append(foot)
         box = Gtk.Box(spacing=12, margin_top=8, margin_bottom=8, margin_start=12, margin_end=12)
@@ -714,6 +716,8 @@ class Window(Adw.ApplicationWindow):
                 self.hints.remove(replaced)
             self.hint_rows[event["id"]] = self._hint_row(event)
             self.hints.prepend(self.hint_rows[event["id"]])
+        elif kind == "hint-checked":
+            self.hints.remove(self.hint_rows.pop(event["id"]))
         elif kind == "saved":
             self.saved_dir = event["dir"]
         elif kind == "processing":
